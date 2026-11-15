@@ -1,0 +1,42 @@
+
+import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
+
+class HardwareChannel {
+  static const MethodChannel _channel =
+      MethodChannel('hardware_monitor/native');
+
+  Future<Map<String, dynamic>> getHardwareInfo() async {
+    try {
+      final result =
+          await _channel.invokeMapMethod<String, dynamic>(
+        'getHardwareInfo',
+      );
+
+      debugPrint('硬體監控回傳資料：$result');
+
+      return result ?? {};
+    } on PlatformException catch (e) {
+      debugPrint('原生平台錯誤：${e.code}');
+      debugPrint('錯誤訊息：${e.message}');
+      debugPrint('錯誤詳細資料：${e.details}');
+
+      return {
+        'error': '${e.code}: ${e.message}',
+      };
+    } on MissingPluginException catch (e) {
+      debugPrint('找不到原生 MethodChannel：$e');
+
+      return {
+        'error': 'MissingPluginException: $e',
+      };
+    } catch (e, stackTrace) {
+      debugPrint('硬體監控未知錯誤：$e');
+      debugPrint('$stackTrace');
+
+      return {
+        'error': e.toString(),
+      };
+    }
+  }
+}
