@@ -1,7 +1,11 @@
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:battery_plus/battery_plus.dart';
 
 import 'services/hardware_service.dart';
@@ -70,6 +74,217 @@ class _DashboardPageState extends State<DashboardPage> {
   bool _loading = true;
   bool _requestingPermission = false;
   bool _refreshing = false;
+
+
+  bool _checkingUpdate = false;
+
+  static const String _githubApi =
+      'https://api.github.com/repos/willy0626/hardware_monitor/releases/latest';
+
+  int _compareVersions(String current, String latest) {
+    List<int> parse(String value) {
+      return value
+          .replaceFirst(RegExp(r'^[vV]'), '')
+          .split('+')[0]
+          .split('.')
+          .map((part) => int.tryParse(part) ?? 0)
+          .toList();
+    }
+
+    final currentParts = parse(current);
+    final latestParts = parse(latest);
+
+    for (int i = 0; i < 3; i++) {
+      final a = i < currentParts.length ? currentParts[i] : 0;
+      final b = i < latestParts.length ? latestParts[i] : 0;
+
+      if (a < b) return -1;
+      if (a > b) return 1;
+    }
+
+    return 0;
+  }
+
+  Future<void> _checkForUpdates() async {
+    if (_checkingUpdate) return;
+
+    setState(() => _checkingUpdate = true);
+
+    try {
+      final response = await http.get(
+        Uri.parse(_githubApi),
+        headers: {
+          'Accept': 'application/vnd.github+json',
+        },
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode != 200) {
+        throw Exception('GitHub API 回應：${response.statusCode}');
+      }
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final tag = data['tag_name']?.toString() ?? '';
+      final latestVersion = tag.replaceFirst(RegExp(r'^[vV]'), '');
+
+      if (latestVersion.isEmpty) {
+        throw Exception('GitHub Release 沒有設定版本標籤');
+      }
+
+      final releaseUrl = data['html_url']?.toString() ?? '';
+      final notes = data['body']?.toString() ?? '';
+      final assets = data['assets'] as List? ?? [];
+
+      String? apkUrl;
+
+      for (final asset in assets) {
+        if (asset is Map &&
+            asset['name']?.toString().toLowerCase().endsWith('.apk') == true) {
+          apkUrl = asset['browser_download_url']?.toString();
+          break;
+        }
+      }
+
+      final packageInfo = await PackageInfo.fromPlatform();
+      final currentVersion = packageInfo.version;
+
+      if (!mounted) return;
+
+      if (_compareVersions(currentVersion, latestVersion) >= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('目前已經是最新版！')),
+        );
+        return;
+      }
+
+      showDialog(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.system_update, color: Colors.blueAccent),
+              SizedBox(width: 8),
+              Text('發現新版本'),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('目前版本：$currentVersion'),
+                const SizedBox(height: 6),
+                Text(
+                  '最新版本：$latestVersion',
+                  style: const TextStyle(
+                    color: Colors.greenAccent,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  '更新內容',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  notes.isEmpty ? '沒有更新說明' : notes,
+                  maxLines: 12,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (apkUrl == null)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 12),
+                    child: Text(
+                      '此版本尚未附上 APK，請前往 GitHub Release 頁面。',
+                      style: TextStyle(color: Colors.orangeAccent),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('稍後'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final url = apkUrl ?? releaseUrl;
+                final uri = Uri.tryParse(url);
+
+                if (uri == null) return;
+
+                Navigator.pop(dialogContext);
+
+                await launchUrl(
+                  uri,
+                  mode: LaunchMode.externalApplication,
+                );
+              },
+              child: Text(apkUrl != null ? '下載更新' : '查看 Release'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      debugPrint('Update check error: $e');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('檢查更新失敗，請確認網路連線'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _checkingUpdate = false);
+      }
+    }
+  }
+
+  void _openSettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (settingsContext) => Scaffold(
+          appBar: AppBar(
+            title: const Text('設定'),
+          ),
+          body: ListView(
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 20, 16, 8),
+                child: Text(
+                  '一般',
+                  style: TextStyle(
+                    color: Colors.white54,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(
+                  Icons.system_update_alt,
+                  color: Colors.blueAccent,
+                ),
+                title: const Text('檢查更新'),
+                subtitle: const Text('檢查 GitHub 是否有新版本'),
+                trailing: _checkingUpdate
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.chevron_right),
+                onTap: _checkingUpdate ? null : _checkForUpdates,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -1217,17 +1432,9 @@ class _DashboardPageState extends State<DashboardPage> {
         title: const Text('手機硬體監控'),
         actions: [
           IconButton(
-            tooltip: '重新整理',
-            onPressed: _refreshing ? null : _refreshAll,
-            icon: _refreshing
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                    ),
-                  )
-                : const Icon(Icons.refresh),
+            tooltip: '設定',
+            onPressed: _openSettings,
+            icon: const Icon(Icons.settings),
           ),
         ],
       ),
