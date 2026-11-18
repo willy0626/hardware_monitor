@@ -5,6 +5,19 @@ import 'package:flutter/foundation.dart';
 class HardwareChannel {
   static const MethodChannel _channel =
       MethodChannel('hardware_monitor/native');
+  static const _batteryChannel = EventChannel('hardware_monitor/battery');
+
+  Stream<Map<String, dynamic>> get batteryUpdates => _batteryChannel
+      .receiveBroadcastStream()
+      .map((event) => Map<String, dynamic>.from(event as Map));
+
+  Future<Map<String, dynamic>> getBatteryDetails() async {
+    return await _channel.invokeMapMethod<String, dynamic>('getBatteryDetails') ??
+        {};
+  }
+
+  Future<int?> getBatteryVoltage() =>
+      _channel.invokeMethod<int>('getBatteryVoltage');
 
   Future<Map<String, dynamic>> getHardwareInfo() async {
     try {

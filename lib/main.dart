@@ -3,11 +3,15 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:battery_plus/battery_plus.dart';
 
+import 'battery_details_page.dart';
+import 'services/battery_details_service.dart';
+import 'services/gpu_usage_service.dart';
 import 'services/hardware_service.dart';
 import 'services/shizuku_service.dart';
 import 'core/platform/hardware_channel.dart';
@@ -57,9 +61,15 @@ class _DashboardPageState extends State<DashboardPage> {
   final HardwareService _hardwareService = HardwareService();
   final HardwareChannel _nativeHardware = HardwareChannel();
   final ShizukuService _shizukuService = ShizukuService();
+  late final GpuUsageService _gpuUsageService = GpuUsageService(_shizukuService);
+  double? _gpuUsage;
+  bool _samplingGpu = false;
   final Battery _battery = Battery();
 
-  Timer? _batteryTimer;
+  StreamSubscription<dynamic>? _batterySubscription;
+  Map<String, dynamic> hardwareBattery = {};
+  bool get _usesAndroidBatteryEvents =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
   Timer? _hardwareTimer;
   Timer? _cpuTimer;
   Timer? _temperatureTimer;
@@ -291,22 +301,31 @@ class _DashboardPageState extends State<DashboardPage> {
     super.initState();
 
     _loadDeviceInfo();
-    _loadBatteryInfo();
+    if (_usesAndroidBatteryEvents) {
+      _batterySubscription = _nativeHardware.batteryUpdates.listen(
+        _updateBatteryInfo,
+        onError: (Object error) => debugPrint('Battery events: $error'),
+      );
+    } else {
+      _loadBatteryInfo();
+      _batterySubscription = _battery.onBatteryStateChanged.listen(
+        (_) => _loadBatteryInfo(),
+        onError: (Object error) => debugPrint('Battery events: $error'),
+      );
+    }
     _loadNativeHardware();
+    _sampleGpuUsage();
     _refreshShizukuStatus();
     _loadShizukuCpu();
     _loadTemperatureSensors();
 
-    // 電池：每 5 秒更新
-    _batteryTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) => _loadBatteryInfo(),
-    );
-
     // 原生硬體：每 2 秒更新
     _hardwareTimer = Timer.periodic(
       const Duration(seconds: 2),
-      (_) => _loadNativeHardware(),
+      (_) {
+        _loadNativeHardware();
+        _sampleGpuUsage();
+      },
     );
 
     // 全機 CPU：每 2 秒更新
@@ -330,7 +349,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   void dispose() {
-    _batteryTimer?.cancel();
+    _batterySubscription?.cancel();
     _hardwareTimer?.cancel();
     _cpuTimer?.cancel();
     _temperatureTimer?.cancel();
@@ -366,15 +385,18 @@ class _DashboardPageState extends State<DashboardPage> {
       final level = await _battery.batteryLevel;
       final state = await _battery.batteryState;
 
-      if (!mounted) return;
-
-      setState(() {
-        _deviceInfo['batteryLevel'] = level;
-        _deviceInfo['batteryState'] = state.toString();
+      _updateBatteryInfo({
+        'level': level >= 0 ? level : null,
+        'status': state.toString(),
       });
     } catch (e) {
       debugPrint('Battery error: $e');
     }
+  }
+
+  void _updateBatteryInfo(Map<String, dynamic> info) {
+    if (!mounted || mapEquals(hardwareBattery, info)) return;
+    setState(() => hardwareBattery = info);
   }
 
   Future<void> _loadNativeHardware() async {
@@ -388,6 +410,17 @@ class _DashboardPageState extends State<DashboardPage> {
       });
     } catch (e) {
       debugPrint('Native hardware error: $e');
+    }
+  }
+
+  Future<void> _sampleGpuUsage() async {
+    if (_samplingGpu) return;
+    _samplingGpu = true;
+    try {
+      final usage = await _gpuUsageService.load();
+      if (mounted && usage != _gpuUsage) setState(() => _gpuUsage = usage);
+    } finally {
+      _samplingGpu = false;
     }
   }
 
@@ -485,8 +518,9 @@ class _DashboardPageState extends State<DashboardPage> {
 
     try {
       await _loadDeviceInfo();
-      await _loadBatteryInfo();
+      if (!_usesAndroidBatteryEvents) await _loadBatteryInfo();
       await _loadNativeHardware();
+      await _sampleGpuUsage();
       await _refreshShizukuStatus();
       await _loadShizukuCpu();
       await _loadTemperatureSensors();
@@ -540,14 +574,6 @@ class _DashboardPageState extends State<DashboardPage> {
 
     return thermal is Map
         ? Map<String, dynamic>.from(thermal)
-        : {};
-  }
-
-  Map<String, dynamic> get hardwareBattery {
-    final battery = _nativeInfo['battery'];
-
-    return battery is Map
-        ? Map<String, dynamic>.from(battery)
         : {};
   }
 
@@ -647,8 +673,7 @@ class _DashboardPageState extends State<DashboardPage> {
   // --------------------------------------------------
 
   String get batteryStateText {
-    final raw = hardwareBattery['status'] ??
-        _deviceInfo['batteryState'];
+    final raw = hardwareBattery['status'];
 
     final state = raw?.toString().toLowerCase() ?? '';
 
@@ -1216,9 +1241,7 @@ class _DashboardPageState extends State<DashboardPage> {
   // --------------------------------------------------
 
   Widget _buildBatteryCard() {
-    final level = _deviceInfo['batteryLevel'] ??
-        hardwareBattery['level'] ??
-        '--';
+    final level = hardwareBattery['level'];
 
     final temperature = hardwareBattery['temperatureC'];
 
@@ -1229,80 +1252,92 @@ class _DashboardPageState extends State<DashboardPage> {
         : (batteryPercent / 100).clamp(0.0, 1.0);
 
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(
-                  Icons.battery_full,
-                  color: Colors.green,
-                ),
-                SizedBox(width: 8),
-                Text(
-                  '電池資訊',
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => Navigator.of(context).push<void>(
+          MaterialPageRoute(
+            builder: (_) => BatteryDetailsPage(
+              service: BatteryDetailsService(_nativeHardware, _shizukuService),
             ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment:
-                  MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('電量'),
-                Text(
-                  batteryPercent != null
-                      ? '${batteryPercent.toStringAsFixed(0)}%'
-                      : '--',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(
+                    Icons.battery_full,
+                    color: Colors.green,
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: LinearProgressIndicator(
-                value: progress,
-                minHeight: 8,
+                  SizedBox(width: 8),
+                  Text(
+                    '電池資訊',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Spacer(),
+                  Icon(Icons.chevron_right),
+                ],
               ),
-            ),
-            const SizedBox(height: 14),
-            Row(
-              mainAxisAlignment:
-                  MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('電池狀態'),
-                Text(
-                  batteryStateText,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment:
+                    MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('電量'),
+                  Text(
+                    batteryPercent != null
+                        ? '${batteryPercent.toStringAsFixed(0)}%'
+                        : '--',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 8,
                 ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment:
-                  MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('電池溫度'),
-                Text(
-                  temperature is num
-                      ? '${temperature.toStringAsFixed(1)}°C'
-                      : '--',
-                ),
-              ],
-            ),
-          ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment:
+                    MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('電池狀態'),
+                  Text(
+                    batteryStateText,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment:
+                    MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('電池溫度'),
+                  Text(
+                    temperature is num
+                        ? '${temperature.toStringAsFixed(1)}°C'
+                        : '--',
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1490,11 +1525,11 @@ class _DashboardPageState extends State<DashboardPage> {
                   color: Colors.purple,
                 ),
                 _buildMetricCard(
-                  title: 'GPU',
-                  value: gpuDisplay,
-                  subtitle:
-                      hardwareGpu['version']?.toString() ??
-                          'GPU Renderer',
+                  title: 'GPU 使用率',
+                  value: _gpuUsage == null
+                      ? '無法取得'
+                      : '${_gpuUsage!.toStringAsFixed(0)}%',
+                  subtitle: hardwareGpu['renderer']?.toString() ?? 'GPU',
                   icon: Icons.developer_board,
                   color: Colors.blue,
                 ),

@@ -5,6 +5,14 @@ import 'package:flutter/foundation.dart';
 class ShizukuService {
   final ShizukuApi _api = ShizukuApi();
 
+  Future<String?> readBatteryDetails(String command) => readSystemData(command);
+
+  Future<String?> readSystemData(String command) async {
+    final status = await getStatus();
+    if (status['permission'] != true) return null;
+    return _api.runCommand(command);
+  }
+
   int? _lastTotal;
   int? _lastIdle;
 

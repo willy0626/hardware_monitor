@@ -2,6 +2,7 @@
 package com.example.hardware_monitor
 
 import android.app.ActivityManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -20,6 +21,8 @@ import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.EventChannel
+import org.xmlpull.v1.XmlPullParser
 
 import java.io.File
 import kotlin.concurrent.thread
@@ -27,6 +30,8 @@ import kotlin.concurrent.thread
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "hardware_monitor/native"
+    private val batteryChannelName = "hardware_monitor/battery"
+    private var batteryReceiver: BroadcastReceiver? = null
 
     private var lastCpuTimeMs = -1L
     private var lastWallTimeMs = -1L
@@ -34,16 +39,46 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, batteryChannelName)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    stopBatteryUpdates()
+                    val receiver = object : BroadcastReceiver() {
+                        override fun onReceive(context: Context, intent: Intent) {
+                            events.success(getBatteryInfo(intent))
+                        }
+                    }
+                    // The sticky system broadcast delivers the current reading on subscription.
+                    applicationContext.registerReceiver(
+                        receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+                    )
+                    batteryReceiver = receiver
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    stopBatteryUpdates()
+                }
+            })
+
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             CHANNEL
         ).setMethodCallHandler { call, result ->
 
             when (call.method) {
-                "getHardwareInfo" -> {
+                "getBatteryVoltage" -> {
+                    val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                    result.success(intent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1))
+                }
+
+                "getHardwareInfo", "getBatteryDetails" -> {
                     thread {
                         try {
-                            val data = getHardwareInfo()
+                            val data = if (call.method == "getBatteryDetails") {
+                                getBatteryDetails()
+                            } else {
+                                getHardwareInfo()
+                            }
 
                             runOnUiThread {
                                 result.success(data)
@@ -63,6 +98,18 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        stopBatteryUpdates()
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, batteryChannelName)
+            .setStreamHandler(null)
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    private fun stopBatteryUpdates() {
+        batteryReceiver?.let(applicationContext::unregisterReceiver)
+        batteryReceiver = null
     }
 
     // 獨立讀取每個硬體項目，避免單項失敗影響其他項目
@@ -86,7 +133,6 @@ class MainActivity : FlutterActivity() {
             "cpu" to safeHardwareRead { getCpuInfo() },
             "ram" to safeHardwareRead { getRamInfo() },
             "gpu" to safeHardwareRead { getGpuInfo() },
-            "battery" to safeHardwareRead { getBatteryInfo() },
             "thermal" to safeHardwareRead { getThermalInfo() }
         )
     }
@@ -367,33 +413,84 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    private fun getBatteryDetails(): Map<String, Any?> {
+        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val manager = getSystemService(BatteryManager::class.java)
+
+        fun batteryProperty(id: Int): Long? {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return null
+            // Android may restrict these Health HAL properties to privileged callers.
+            return try {
+                manager.getLongProperty(id).takeUnless { it == Long.MIN_VALUE }
+            } catch (_: SecurityException) {
+                null
+            }
+        }
+
+        val profile = getBatteryProfileCapacities()
+        return mapOf(
+            "manufacturer" to Build.MANUFACTURER,
+            "sdkInt" to Build.VERSION.SDK_INT,
+            "technology" to intent?.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY),
+            "voltageMv" to intent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1),
+            "cycleCount" to intent?.getIntExtra("android.os.extra.CYCLE_COUNT", -1),
+            // Android 14 BatteryManager property IDs are hidden on some SDKs.
+            "manufactureDate" to batteryProperty(7),
+            "firstUseDate" to batteryProperty(8),
+            "healthPercent" to batteryProperty(10),
+            "profileCapacityMah" to profile["battery.capacity"],
+            "typicalCapacityMah" to profile["battery.typical.capacity"]
+        )
+    }
+
+    private fun getBatteryProfileCapacities(): Map<String, Double> {
+        val id = resources.getIdentifier("power_profile", "xml", "android")
+        if (id == 0) return emptyMap()
+        return runCatching {
+            resources.getXml(id).use { profile ->
+                val capacities = mutableMapOf<String, Double>()
+                while (profile.next() != XmlPullParser.END_DOCUMENT) {
+                    if (profile.eventType != XmlPullParser.START_TAG || profile.name != "item") {
+                        continue
+                    }
+                    val name = profile.getAttributeValue(null, "name")
+                    if (name == "battery.capacity" || name == "battery.typical.capacity") {
+                        val value = profile.nextText().trim().toDoubleOrNull()
+                        // AOSP's default battery.capacity is a placeholder.
+                        if (value != null && value.isFinite() && value > 0 &&
+                            (name != "battery.capacity" || value != 1000.0)
+                        ) {
+                            capacities[name] = value
+                        }
+                    }
+                }
+                capacities
+            }
+        }.getOrNull() ?: emptyMap()
+    }
+
     // 電池資訊
-    private fun getBatteryInfo(): Map<String, Any?> {
-        val intent = registerReceiver(
-            null,
-            IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+    private fun getBatteryInfo(intent: Intent): Map<String, Any?> {
+        val level = intent.getIntExtra(
+            BatteryManager.EXTRA_LEVEL, -1
         )
 
-        val level = intent?.getIntExtra(
-            BatteryManager.EXTRA_LEVEL, -1
-        ) ?: -1
-
-        val scale = intent?.getIntExtra(
+        val scale = intent.getIntExtra(
             BatteryManager.EXTRA_SCALE, -1
-        ) ?: -1
+        )
 
-        val temperature = intent?.getIntExtra(
+        val temperature = intent.getIntExtra(
             BatteryManager.EXTRA_TEMPERATURE, -1
-        ) ?: -1
+        )
 
-        val status = intent?.getIntExtra(
+        val status = intent.getIntExtra(
             BatteryManager.EXTRA_STATUS, -1
-        ) ?: -1
+        )
 
         val batteryLevel = if (scale > 0 && level >= 0) {
             level * 100 / scale
         } else {
-            -1
+            null
         }
 
         return mapOf(
