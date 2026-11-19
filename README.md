@@ -1,6 +1,7 @@
 # hardware_monitor
 
-A new Flutter project.
+這是個可以使用手機查看您的硬體的程式
+目前持續更新中
 
 ## Getting Started
 
