@@ -19,14 +19,16 @@ class HardwareChannel {
   Future<int?> getBatteryVoltage() =>
       _channel.invokeMethod<int>('getBatteryVoltage');
 
-  Future<Map<String, dynamic>> getHardwareInfo() async {
+  Future<Map<String, dynamic>> getCpuInfo() async =>
+      await _channel.invokeMapMethod<String, dynamic>('getCpuInfo') ?? {};
+
+  Future<Map<String, dynamic>> getHardwareInfo({bool includeCpu = true}) async {
     try {
       final result =
           await _channel.invokeMapMethod<String, dynamic>(
         'getHardwareInfo',
+        {'includeCpu': includeCpu},
       );
-
-      debugPrint('硬體監控回傳資料：$result');
 
       return result ?? {};
     } on PlatformException catch (e) {

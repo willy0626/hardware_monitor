@@ -8,7 +8,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
 import android.os.PowerManager
+import android.os.StatFs
 import android.os.SystemClock
 import android.opengl.EGL14
 import android.opengl.EGLConfig
@@ -35,6 +37,7 @@ class MainActivity : FlutterActivity() {
 
     private var lastCpuTimeMs = -1L
     private var lastWallTimeMs = -1L
+    private var gpuIdentity: Map<String, Any?>? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -71,13 +74,14 @@ class MainActivity : FlutterActivity() {
                     result.success(intent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1))
                 }
 
-                "getHardwareInfo", "getBatteryDetails" -> {
+                "getHardwareInfo", "getBatteryDetails", "getCpuInfo" -> {
+                    val includeCpu = call.argument<Boolean>("includeCpu") != false
                     thread {
                         try {
-                            val data = if (call.method == "getBatteryDetails") {
-                                getBatteryDetails()
-                            } else {
-                                getHardwareInfo()
+                            val data = when (call.method) {
+                                "getBatteryDetails" -> getBatteryDetails()
+                                "getCpuInfo" -> getCpuInfo()
+                                else -> getHardwareInfo(includeCpu)
                             }
 
                             runOnUiThread {
@@ -127,14 +131,17 @@ class MainActivity : FlutterActivity() {
     }
 
     // 取得所有硬體資訊
-    private fun getHardwareInfo(): Map<String, Any?> {
-        return mapOf(
+    private fun getHardwareInfo(includeCpu: Boolean): Map<String, Any?> {
+        return buildMap {
+            putAll(mapOf(
             "device" to safeHardwareRead { getDeviceInfo() },
-            "cpu" to safeHardwareRead { getCpuInfo() },
             "ram" to safeHardwareRead { getRamInfo() },
+            "storage" to safeHardwareRead { getStorageInfo() },
             "gpu" to safeHardwareRead { getGpuInfo() },
             "thermal" to safeHardwareRead { getThermalInfo() }
-        )
+            ))
+            if (includeCpu) put("cpu", safeHardwareRead { getCpuInfo() })
+        }
     }
 
     // 裝置資訊與 Samsung One UI 版本
@@ -224,7 +231,8 @@ class MainActivity : FlutterActivity() {
         lastWallTimeMs = currentWallTime
 
         // 嘗試讀取 CPU 核心頻率
-        val frequencies = mutableListOf<Int>()
+        val frequencies = mutableMapOf<Int, Int>()
+        val frequenciesByPolicy = mutableMapOf<String, Int?>()
 
         for (i in 0 until cores) {
             try {
@@ -233,8 +241,12 @@ class MainActivity : FlutterActivity() {
                 )
 
                 if (file.canRead()) {
-                    val khz = file.readText().trim().toInt()
-                    frequencies.add(khz / 1000)
+                    val path = file.canonicalPath
+                    if (!frequenciesByPolicy.containsKey(path)) {
+                        frequenciesByPolicy[path] = file.readText().trim().toIntOrNull()
+                    }
+                    val khz = frequenciesByPolicy[path]
+                    if (khz != null && khz > 0) frequencies[i] = khz / 1000
                 }
             } catch (_: Exception) {
                 // Android 可能限制讀取核心頻率
@@ -245,7 +257,8 @@ class MainActivity : FlutterActivity() {
             "cores" to cores,
             "usage" to usage,
             "usageScope" to "App process",
-            "frequenciesMHz" to frequencies,
+            "frequenciesMHz" to frequencies.values.toList(),
+            "frequenciesByCoreMHz" to frequencies,
             "frequencyAvailable" to frequencies.isNotEmpty()
         )
     }
@@ -277,8 +290,19 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    private fun getStorageInfo(): Map<String, Long> {
+        val storage = StatFs(Environment.getDataDirectory().absolutePath)
+        val totalBytes = storage.totalBytes
+        val availableBytes = storage.availableBytes
+        return mapOf(
+            "totalBytes" to totalBytes,
+            "usedBytes" to (totalBytes - availableBytes).coerceAtLeast(0L)
+        )
+    }
+
     // GPU 資訊
     private fun getGpuInfo(): Map<String, Any?> {
+        gpuIdentity?.let { return it }
         var renderer: String? = null
         var version: String? = null
 
@@ -410,7 +434,7 @@ class MainActivity : FlutterActivity() {
             "renderer" to renderer,
             "version" to version,
             "available" to (renderer != null)
-        )
+        ).also { if (renderer != null) gpuIdentity = it }
     }
 
     private fun getBatteryDetails(): Map<String, Any?> {

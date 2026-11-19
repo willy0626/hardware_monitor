@@ -1,4 +1,6 @@
 
+import 'dart:io';
+
 import 'package:shizuku_api_plugin/shizuku_api.dart';
 import 'package:flutter/foundation.dart';
 
@@ -13,8 +15,8 @@ class ShizukuService {
     return _api.runCommand(command);
   }
 
-  int? _lastTotal;
-  int? _lastIdle;
+  final _cpuBaseline = <int, ({int total, int idle})>{};
+  static final _cpuLine = RegExp(r'^cpu(\d*)\s+');
 
   /// 檢查 Shizuku 狀態
   Future<Map<String, dynamic>> getStatus() async {
@@ -61,17 +63,28 @@ class ShizukuService {
   /// 讀取全機 CPU 使用率
   Future<Map<String, dynamic>> getSystemCpuUsage() async {
     try {
-      final status = await getStatus();
-
-      if (status['running'] != true ||
-          status['permission'] != true) {
-        return {
-          'available': false,
-          'reason': 'Shizuku 尚未授權',
-        };
+      String? output;
+      var source = '系統 /proc/stat';
+      if (!kIsWeb && Platform.isAndroid) {
+        try {
+          output = await File('/proc/stat').readAsString();
+        } on FileSystemException {
+          // Android may restrict the CPU counters to shell or system callers.
+        }
       }
 
-      final output = await _api.runCommand('cat /proc/stat');
+      if (output == null || !_cpuLine.hasMatch(output)) {
+        final status = await getStatus();
+        if (status['running'] != true || status['permission'] != true) {
+          resetCpuBaseline();
+          return {
+            'available': false,
+            'reason': '系統未開放讀取核心負載，需要 Shizuku 授權',
+          };
+        }
+        output = await _api.runCommand('cat /proc/stat');
+        source = 'Shizuku /proc/stat';
+      }
 
       if (output == null || output.isEmpty) {
         return {
@@ -80,73 +93,45 @@ class ShizukuService {
         };
       }
 
-      final line = output
-          .split('\n')
-          .firstWhere(
-            (line) => line.startsWith('cpu '),
-            orElse: () => '',
-          );
+      final samples = <int, double?>{};
+      final hadBaseline = _cpuBaseline.containsKey(-1);
+      for (final line in output.split('\n')) {
+        final match = _cpuLine.firstMatch(line);
+        if (match == null) continue;
+        final core = int.tryParse(match[1]!) ?? -1;
+        final values = line
+            .substring(match.end)
+            .trim()
+            .split(RegExp(r'\s+'))
+            .take(8)
+            .map(int.tryParse)
+            .whereType<int>()
+            .toList();
+        if (values.length != 8 || values.any((value) => value < 0)) continue;
 
-      if (line.isEmpty) {
-        return {
-          'available': false,
-          'reason': 'CPU 資料格式不正確',
-        };
+        final total = values.reduce((sum, value) => sum + value);
+        final idle = values[3] + values[4];
+        final previous = _cpuBaseline[core];
+        _cpuBaseline[core] = (total: total, idle: idle);
+        samples[core] = null;
+        if (previous == null) continue;
+        final elapsed = total - previous.total;
+        final idleElapsed = idle - previous.idle;
+        if (elapsed > 0 && idleElapsed >= 0 && idleElapsed <= elapsed) {
+          samples[core] = (elapsed - idleElapsed) * 100.0 / elapsed;
+        }
       }
-
-      final values = line
-          .trim()
-          .split(RegExp(r'\s+'))
-          .skip(1)
-          .map((value) => int.tryParse(value) ?? 0)
-          .toList();
-
-      if (values.length < 8) {
-        return {
-          'available': false,
-          'reason': 'CPU 資料不足',
-        };
-      }
-
-      // Linux /proc/stat 前八個欄位
-      final total = values.take(8).fold<int>(
-        0,
-        (sum, value) => sum + value,
-      );
-
-      final idle = values[3] + values[4];
-
-      if (_lastTotal == null || _lastIdle == null) {
-        _lastTotal = total;
-        _lastIdle = idle;
-
-        return {
-          'available': false,
-          'reason': '正在建立 CPU 取樣基準',
-        };
-      }
-
-      final totalDiff = total - _lastTotal!;
-      final idleDiff = idle - _lastIdle!;
-
-      _lastTotal = total;
-      _lastIdle = idle;
-
-      if (totalDiff <= 0) {
-        return {
-          'available': false,
-          'reason': 'CPU 取樣間隔無效',
-        };
-      }
-
-      final usage =
-          (1.0 - idleDiff / totalDiff) * 100.0;
+      _cpuBaseline.removeWhere((core, _) => !samples.containsKey(core));
+      final usage = samples.remove(-1);
 
       return {
-        'available': true,
-        'usage': usage.clamp(0.0, 100.0),
+        'available': usage != null,
+        'usage': usage,
+        'coreUsage': samples,
+        if (usage == null)
+          'reason': hadBaseline ? 'CPU 取樣間隔無效' : '正在建立 CPU 取樣基準',
         'usageScope': 'Whole device',
-        'source': 'Shizuku /proc/stat',
+        'source': source,
       };
     } catch (e) {
       return {
@@ -182,7 +167,6 @@ class ShizukuService {
           ''';
 
       final output = await _api.runCommand(command);
-      debugPrint('Thermal Zone Output: $output');
 
       if (output == null || output.trim().isEmpty) {
         return {
@@ -236,7 +220,6 @@ class ShizukuService {
   }
 
   void resetCpuBaseline() {
-    _lastTotal = null;
-    _lastIdle = null;
+    _cpuBaseline.clear();
   }
 }

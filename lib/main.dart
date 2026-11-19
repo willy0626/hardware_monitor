@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:battery_plus/battery_plus.dart';
 
 import 'battery_details_page.dart';
+import 'cpu_details_page.dart';
 import 'services/battery_details_service.dart';
 import 'services/gpu_usage_service.dart';
 import 'services/hardware_service.dart';
@@ -70,15 +71,19 @@ class _DashboardPageState extends State<DashboardPage> {
   Map<String, dynamic> hardwareBattery = {};
   bool get _usesAndroidBatteryEvents =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-  Timer? _hardwareTimer;
-  Timer? _cpuTimer;
-  Timer? _temperatureTimer;
+  Timer? _liveTimer;
   Timer? _shizukuStatusTimer;
+  bool _readingNativeHardware = false;
+  bool _readingNativeCpu = false;
+  bool _readingTemperatures = false;
 
   Map<String, dynamic> _deviceInfo = {};
   Map<String, dynamic> _nativeInfo = {};
   Map<String, dynamic> _shizukuStatus = {};
-  Map<String, dynamic> _shizukuCpu = {};
+  final _cpuSamples = ValueNotifier<Map<String, dynamic>>({});
+  final _nativeCpu = ValueNotifier<Map<String, dynamic>>({});
+  Map<String, dynamic> get _shizukuCpu => _cpuSamples.value;
+  bool _samplingCpu = false;
   Map<String, dynamic> _temperatureInfo = {};
 
   bool _loading = true;
@@ -314,46 +319,47 @@ class _DashboardPageState extends State<DashboardPage> {
       );
     }
     _loadNativeHardware();
-    _sampleGpuUsage();
+    _loadNativeCpu();
     _refreshShizukuStatus();
     _loadShizukuCpu();
     _loadTemperatureSensors();
 
-    // 原生硬體：每 2 秒更新
-    _hardwareTimer = Timer.periodic(
-      const Duration(seconds: 2),
-      (_) {
-        _loadNativeHardware();
-        _sampleGpuUsage();
+    _liveTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (timer) {
+        if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+          return;
+        }
+        _loadNativeCpu();
+        if (timer.tick % 2 == 0) {
+          _loadShizukuCpu();
+          _sampleGpuUsage();
+        }
+        if (timer.tick % 4 == 0) _loadNativeHardware();
+        if (timer.tick % 10 == 0 && shizukuAuthorized) {
+          _loadTemperatureSensors();
+        }
       },
-    );
-
-    // 全機 CPU：每 2 秒更新
-    _cpuTimer = Timer.periodic(
-      const Duration(seconds: 2),
-      (_) => _loadShizukuCpu(),
-    );
-
-    // 溫度感測器：每 5 秒更新
-    _temperatureTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) => _loadTemperatureSensors(),
     );
 
     // Shizuku 狀態：每 5 秒重新檢查
     _shizukuStatusTimer = Timer.periodic(
       const Duration(seconds: 5),
-      (_) => _refreshShizukuStatus(),
+      (_) {
+        if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+          _refreshShizukuStatus();
+        }
+      },
     );
   }
 
   @override
   void dispose() {
     _batterySubscription?.cancel();
-    _hardwareTimer?.cancel();
-    _cpuTimer?.cancel();
-    _temperatureTimer?.cancel();
+    _liveTimer?.cancel();
     _shizukuStatusTimer?.cancel();
+    _cpuSamples.dispose();
+    _nativeCpu.dispose();
     super.dispose();
   }
 
@@ -400,8 +406,10 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Future<void> _loadNativeHardware() async {
+    if (_readingNativeHardware) return;
+    _readingNativeHardware = true;
     try {
-      final info = await _nativeHardware.getHardwareInfo();
+      final info = await _nativeHardware.getHardwareInfo(includeCpu: false);
 
       if (!mounted) return;
 
@@ -410,15 +418,33 @@ class _DashboardPageState extends State<DashboardPage> {
       });
     } catch (e) {
       debugPrint('Native hardware error: $e');
+    } finally {
+      _readingNativeHardware = false;
+    }
+  }
+
+  Future<void> _loadNativeCpu() async {
+    if (_readingNativeCpu) return;
+    _readingNativeCpu = true;
+    try {
+      final cpu = await _nativeHardware.getCpuInfo();
+      if (!mounted) return;
+      _nativeCpu.value = cpu;
+    } catch (error) {
+      debugPrint('Native CPU: $error');
+    } finally {
+      _readingNativeCpu = false;
     }
   }
 
   Future<void> _sampleGpuUsage() async {
-    if (_samplingGpu) return;
+    if (!mounted || !shizukuAuthorized || _samplingGpu) return;
     _samplingGpu = true;
     try {
       final usage = await _gpuUsageService.load();
-      if (mounted && usage != _gpuUsage) setState(() => _gpuUsage = usage);
+      if (mounted && shizukuAuthorized && usage != _gpuUsage) {
+        setState(() => _gpuUsage = usage);
+      }
     } finally {
       _samplingGpu = false;
     }
@@ -430,9 +456,12 @@ class _DashboardPageState extends State<DashboardPage> {
 
       if (!mounted) return;
 
+      final wasAuthorized = shizukuAuthorized;
       setState(() {
         _shizukuStatus = status;
+        if (!shizukuAuthorized) _gpuUsage = null;
       });
+      if (!wasAuthorized && shizukuAuthorized) _sampleGpuUsage();
     } catch (e) {
       debugPrint('Shizuku status error: $e');
     }
@@ -463,29 +492,31 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Future<void> _loadShizukuCpu() async {
+    if (_samplingCpu) return;
+    _samplingCpu = true;
     try {
       final result = await _shizukuService.getSystemCpuUsage();
 
       if (!mounted) return;
 
-      setState(() {
-        _shizukuCpu = result;
-      });
+      _cpuSamples.value = result;
     } catch (e) {
       debugPrint('Shizuku CPU error: $e');
 
       if (mounted) {
-        setState(() {
-          _shizukuCpu = {
-            'available': false,
-            'reason': 'CPU 讀取失敗',
-          };
-        });
+        _cpuSamples.value = {
+          'available': false,
+          'reason': 'CPU 讀取失敗',
+        };
       }
+    } finally {
+      _samplingCpu = false;
     }
   }
 
   Future<void> _loadTemperatureSensors() async {
+    if (_readingTemperatures) return;
+    _readingTemperatures = true;
     try {
       final result = await _shizukuService.getThermalSensors();
 
@@ -506,6 +537,8 @@ class _DashboardPageState extends State<DashboardPage> {
           };
         });
       }
+    } finally {
+      _readingTemperatures = false;
     }
   }
 
@@ -520,8 +553,9 @@ class _DashboardPageState extends State<DashboardPage> {
       await _loadDeviceInfo();
       if (!_usesAndroidBatteryEvents) await _loadBatteryInfo();
       await _loadNativeHardware();
-      await _sampleGpuUsage();
+      await _loadNativeCpu();
       await _refreshShizukuStatus();
+      await _sampleGpuUsage();
       await _loadShizukuCpu();
       await _loadTemperatureSensors();
     } finally {
@@ -545,13 +579,7 @@ class _DashboardPageState extends State<DashboardPage> {
         : {};
   }
 
-  Map<String, dynamic> get hardwareCpu {
-    final cpu = _nativeInfo['cpu'];
-
-    return cpu is Map
-        ? Map<String, dynamic>.from(cpu)
-        : {};
-  }
+  Map<String, dynamic> get hardwareCpu => _nativeCpu.value;
 
   Map<String, dynamic> get hardwareRam {
     final ram = _nativeInfo['ram'];
@@ -651,6 +679,13 @@ class _DashboardPageState extends State<DashboardPage> {
     }
 
     return '--';
+  }
+
+  String? _storageSize(String key) {
+    final storage = _nativeInfo['storage'];
+    final bytes = storage is Map ? storage[key] : null;
+    if (bytes is! num || bytes < 0) return null;
+    return '${(bytes / 1000000000).toStringAsFixed(1)} GB';
   }
 
   String get gpuDisplay {
@@ -793,57 +828,61 @@ class _DashboardPageState extends State<DashboardPage> {
     required String subtitle,
     required IconData icon,
     required Color color,
+    VoidCallback? onTap,
   }) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, color: color, size: 21),
-                const SizedBox(width: 7),
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: Align(
-                alignment: Alignment.centerLeft,
+    final content = Padding(
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: color, size: 21),
+              const SizedBox(width: 7),
+              Expanded(
                 child: Text(
-                  value,
-                  maxLines: 2,
+                  title,
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
+                    color: Colors.white70,
+                    fontSize: 13,
                   ),
                 ),
               ),
-            ),
-            Text(
-              subtitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 11,
-                color: Colors.white54,
+              if (onTap != null) const Icon(Icons.chevron_right, size: 18),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                value,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
-          ],
-        ),
+          ),
+          Text(
+            subtitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 11,
+              color: Colors.white54,
+            ),
+          ),
+        ],
       ),
+    );
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: onTap == null ? content : InkWell(onTap: onTap, child: content),
     );
   }
 
@@ -1462,99 +1501,119 @@ class _DashboardPageState extends State<DashboardPage> {
       );
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('手機硬體監控'),
-        actions: [
-          IconButton(
-            tooltip: '設定',
-            onPressed: _openSettings,
-            icon: const Icon(Icons.settings),
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _refreshAll,
-        child: ListView(
-          padding: const EdgeInsets.all(12),
-          children: [
-            _buildDeviceInfoCard(),
+    final totalStorage = _storageSize('totalBytes');
+    final dashboard = RefreshIndicator(
+      onRefresh: _refreshAll,
+      child: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          _buildDeviceInfoCard(),
 
-            const SizedBox(height: 10),
+          const SizedBox(height: 10),
 
-            _buildModeCard(),
+          _buildModeCard(),
 
-            const SizedBox(height: 10),
+          const SizedBox(height: 10),
 
-            _buildShizukuCard(),
+          _buildShizukuCard(),
 
-            const SizedBox(height: 10),
+          const SizedBox(height: 10),
 
-            const Text(
-              '硬體即時監控',
-              style: TextStyle(
-                fontSize: 19,
-                fontWeight: FontWeight.bold,
-              ),
+          const Text(
+            '硬體即時監控',
+            style: TextStyle(
+              fontSize: 19,
+              fontWeight: FontWeight.bold,
             ),
+          ),
 
-            const SizedBox(height: 8),
+          const SizedBox(height: 8),
 
-            GridView.count(
-              crossAxisCount: 2,
-              shrinkWrap: true,
-              physics:
-                  const NeverScrollableScrollPhysics(),
-              childAspectRatio: 1.3,
-              children: [
-                _buildMetricCard(
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics:
+                const NeverScrollableScrollPhysics(),
+            childAspectRatio: 1.3,
+            children: [
+              ListenableBuilder(
+                listenable: Listenable.merge([_cpuSamples, _nativeCpu]),
+                builder: (context, _) => _buildMetricCard(
                   title: 'CPU 使用率',
                   value: cpuDisplay,
                   subtitle: cpuSubtitle,
                   icon: Icons.memory,
                   color: Colors.orange,
+                  onTap: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => CpuDetailsPage(
+                        samples: _cpuSamples,
+                        nativeCpu: _nativeCpu,
+                      ),
+                    ),
+                  ),
                 ),
-                _buildMetricCard(
-                  title: 'RAM 已使用',
-                  value: ramDisplay,
-                  subtitle:
-                      hardwareRam['totalMB'] is num
-                          ? '總共 ${((hardwareRam['totalMB'] as num) / 1024).toStringAsFixed(1)} GB'
-                          : '記憶體',
-                  icon: Icons.storage,
-                  color: Colors.purple,
-                ),
-                _buildMetricCard(
-                  title: 'GPU 使用率',
-                  value: _gpuUsage == null
-                      ? '無法取得'
-                      : '${_gpuUsage!.toStringAsFixed(0)}%',
-                  subtitle: hardwareGpu['renderer']?.toString() ?? 'GPU',
-                  icon: Icons.developer_board,
-                  color: Colors.blue,
-                ),
-                _buildMetricCard(
-                  title: '系統溫控',
-                  value: thermalDisplay,
-                  subtitle: 'Android Thermal Status',
-                  icon: Icons.thermostat,
-                  color: Colors.cyan,
-                ),
-              ],
+              ),
+              _buildMetricCard(
+                title: 'RAM 已使用',
+                value: ramDisplay,
+                subtitle:
+                    hardwareRam['totalMB'] is num
+                        ? '總共 ${((hardwareRam['totalMB'] as num) / 1024).toStringAsFixed(1)} GB'
+                        : '記憶體',
+                icon: Icons.storage,
+                color: Colors.purple,
+              ),
+              _buildMetricCard(
+                title: 'GPU 使用率',
+                value: !shizukuAuthorized || _gpuUsage == null
+                    ? '無法取得'
+                    : '${_gpuUsage!.toStringAsFixed(0)}%',
+                subtitle: shizukuAuthorized ? '全機GPU使用率' : 'app本身GPU使用率',
+                icon: Icons.developer_board,
+                color: Colors.blue,
+              ),
+              _buildMetricCard(
+                title: '系統溫控',
+                value: thermalDisplay,
+                subtitle: 'Android Thermal Status',
+                icon: Icons.thermostat,
+                color: Colors.cyan,
+              ),
+            ],
+          ),
+          SizedBox(
+            height: 108,
+            child: _buildMetricCard(
+              title: '儲存空間已用',
+              value: _storageSize('usedBytes') ?? '無法取得',
+              subtitle: totalStorage == null
+                  ? '內部儲存'
+                  : '總共 $totalStorage',
+              icon: Icons.folder_outlined,
+              color: Colors.teal,
             ),
+          ),
 
-            const SizedBox(height: 10),
+          const SizedBox(height: 10),
 
-            _buildBatteryCard(),
+          _buildBatteryCard(),
 
-            const SizedBox(height: 10),
+          const SizedBox(height: 10),
 
-            _buildTemperatureCard(),
+          _buildTemperatureCard(),
 
-            const SizedBox(height: 30),
-          ],
-        ),
+          const SizedBox(height: 80),
+        ],
       ),
+    );
+    return Scaffold(
+      floatingActionButton: FloatingActionButton(
+        tooltip: '設定',
+        onPressed: _openSettings,
+        child: const Icon(Icons.settings),
+      ),
+      body: SafeArea(child: dashboard),
     );
   }
 }
