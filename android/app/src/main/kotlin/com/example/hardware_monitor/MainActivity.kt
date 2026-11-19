@@ -201,6 +201,8 @@ class MainActivity : FlutterActivity() {
             "deviceName" to deviceName,
             "androidVersion" to "Android ${Build.VERSION.RELEASE}",
             "androidSdk" to Build.VERSION.SDK_INT,
+            "socManufacturer" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MANUFACTURER else null,
+            "socModel" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL else null,
             "oneUiVersion" to oneUiVersion,
             "oneUiRaw" to oneUiRaw
         )

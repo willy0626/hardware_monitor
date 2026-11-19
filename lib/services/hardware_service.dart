@@ -19,6 +19,9 @@ class HardwareService {
             await _deviceInfoPlugin.androidInfo;
 
         deviceData = {
+          'brand': androidInfo.brand,
+          'manufacturer': androidInfo.manufacturer,
+          'model': androidInfo.model,
           'deviceName':
               '${androidInfo.manufacturer} ${androidInfo.model}',
           'osVersion':
@@ -26,12 +29,20 @@ class HardwareService {
           'hardware': androidInfo.hardware,
           'board': androidInfo.board,
           'device': androidInfo.device,
+          'product': androidInfo.product,
+          'securityPatch': androidInfo.version.securityPatch ?? '',
+          'buildId': androidInfo.id,
+          'buildDisplay': androidInfo.display,
+          'bootloader': androidInfo.bootloader,
+          'abis': androidInfo.supportedAbis.join(', '),
         };
       } else if (Platform.isIOS) {
         IosDeviceInfo iosInfo =
             await _deviceInfoPlugin.iosInfo;
 
         deviceData = {
+          'brand': 'Apple',
+          'model': iosInfo.utsname.machine,
           'deviceName': iosInfo.name,
           'osVersion':
               '${iosInfo.systemName} ${iosInfo.systemVersion}',

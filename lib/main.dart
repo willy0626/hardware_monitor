@@ -3,9 +3,11 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:battery_plus/battery_plus.dart';
 
@@ -17,42 +19,91 @@ import 'services/hardware_service.dart';
 import 'services/shizuku_service.dart';
 import 'core/platform/hardware_channel.dart';
 
-void main() {
+const _themePreference = 'themeMode';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const HardwareMonitorApp());
+  final preferences = SharedPreferencesAsync();
+  var mode = ThemeMode.system;
+  try {
+    final saved = await preferences.getString(_themePreference);
+    mode = ThemeMode.values.firstWhere(
+      (mode) => mode.name == saved,
+      orElse: () => ThemeMode.system,
+    );
+  } catch (error) {
+    debugPrint('Appearance preference: $error');
+  }
+  runApp(HardwareMonitorApp(initialThemeMode: mode));
 }
 
-class HardwareMonitorApp extends StatelessWidget {
-  const HardwareMonitorApp({super.key});
+class HardwareMonitorApp extends StatefulWidget {
+  const HardwareMonitorApp({super.key, this.initialThemeMode = ThemeMode.system});
+
+  final ThemeMode initialThemeMode;
+
+  @override
+  State<HardwareMonitorApp> createState() => _HardwareMonitorAppState();
+}
+
+class _HardwareMonitorAppState extends State<HardwareMonitorApp> {
+  late final _themeMode = ValueNotifier(widget.initialThemeMode);
+
+  void _selectTheme(ThemeMode mode) {
+    _themeMode.value = mode;
+    unawaited(_saveTheme(mode));
+  }
+
+  Future<void> _saveTheme(ThemeMode mode) async {
+    try {
+      await SharedPreferencesAsync().setString(_themePreference, mode.name);
+    } catch (error) {
+      debugPrint('Saving appearance preference: $error');
+    }
+  }
+
+  @override
+  void dispose() {
+    _themeMode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '手機硬體監控',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFF10131A),
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blue,
-          brightness: Brightness.dark,
-        ),
-        cardTheme: CardThemeData(
-          color: const Color(0xFF1B202B),
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-        ),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: _themeMode,
+      builder: (_, mode, home) => MaterialApp(
+        title: '手機硬體監控',
+        debugShowCheckedModeBanner: false,
+        themeMode: mode,
+        theme: _theme(Brightness.light),
+        darkTheme: _theme(Brightness.dark),
+        home: home,
       ),
-      home: const DashboardPage(),
+      child: DashboardPage(themeMode: _themeMode, onThemeChanged: _selectTheme),
+    );
+  }
+
+  ThemeData _theme(Brightness brightness) {
+    final dark = brightness == Brightness.dark;
+    return ThemeData(
+      useMaterial3: true,
+      scaffoldBackgroundColor: dark ? const Color(0xFF10131A) : const Color(0xFFF3F5F9),
+      colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue, brightness: brightness),
+      cardTheme: CardThemeData(
+        color: dark ? const Color(0xFF1B202B) : Colors.white,
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      ),
     );
   }
 }
 
 class DashboardPage extends StatefulWidget {
-  const DashboardPage({super.key});
+  const DashboardPage({super.key, required this.themeMode, required this.onThemeChanged});
+
+  final ValueListenable<ThemeMode> themeMode;
+  final ValueChanged<ThemeMode> onThemeChanged;
 
   @override
   State<DashboardPage> createState() => _DashboardPageState();
@@ -87,6 +138,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Map<String, dynamic> _temperatureInfo = {};
 
   bool _loading = true;
+  int _selectedTab = 0;
   bool _requestingPermission = false;
   bool _refreshing = false;
 
@@ -268,13 +320,33 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
           body: ListView(
             children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 20, 16, 8),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
                 child: Text(
                   '一般',
                   style: TextStyle(
-                    color: Colors.white54,
+                    color: Theme.of(settingsContext).colorScheme.onSurfaceVariant,
                     fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              ValueListenableBuilder<ThemeMode>(
+                valueListenable: widget.themeMode,
+                builder: (_, mode, _) => ListTile(
+                  leading: const Icon(Icons.palette_outlined),
+                  title: const Text('外觀'),
+                  trailing: DropdownButtonHideUnderline(
+                    child: DropdownButton<ThemeMode>(
+                      value: mode,
+                      items: const [
+                        DropdownMenuItem(value: ThemeMode.light, child: Text('白色')),
+                        DropdownMenuItem(value: ThemeMode.dark, child: Text('深色')),
+                        DropdownMenuItem(value: ThemeMode.system, child: Text('隨系統')),
+                      ],
+                      onChanged: (mode) {
+                        if (mode != null) widget.onThemeChanged(mode);
+                      },
+                    ),
                   ),
                 ),
               ),
@@ -688,17 +760,6 @@ class _DashboardPageState extends State<DashboardPage> {
     return '${(bytes / 1000000000).toStringAsFixed(1)} GB';
   }
 
-  String get gpuDisplay {
-    final renderer = hardwareGpu['renderer'];
-
-    if (renderer != null &&
-        renderer.toString().isNotEmpty) {
-      return renderer.toString();
-    }
-
-    return '讀取中';
-  }
-
   String get thermalDisplay {
     return hardwareThermal['statusText']?.toString() ?? '未知';
   }
@@ -844,8 +905,8 @@ class _DashboardPageState extends State<DashboardPage> {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white70,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontSize: 13,
                   ),
                 ),
@@ -872,9 +933,9 @@ class _DashboardPageState extends State<DashboardPage> {
             subtitle,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
-              color: Colors.white54,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
         ],
@@ -912,10 +973,10 @@ class _DashboardPageState extends State<DashboardPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     '目前監控模式',
                     style: TextStyle(
-                      color: Colors.white54,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontSize: 12,
                     ),
                   ),
@@ -935,8 +996,8 @@ class _DashboardPageState extends State<DashboardPage> {
                     advanced
                         ? '已啟用進階系統資料讀取'
                         : '基本硬體監控不需要 Shizuku',
-                    style: const TextStyle(
-                      color: Colors.white54,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontSize: 11,
                     ),
                   ),
@@ -1009,8 +1070,8 @@ class _DashboardPageState extends State<DashboardPage> {
             const SizedBox(height: 10),
             Text(
               statusText,
-              style: const TextStyle(
-                color: Colors.white70,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
             const SizedBox(height: 12),
@@ -1037,11 +1098,11 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             ),
             const SizedBox(height: 6),
-            const Text(
+            Text(
               'Shizuku 是選用的進階功能。沒有啟動時，基本監控仍然可以使用。',
               style: TextStyle(
                 fontSize: 11,
-                color: Colors.white54,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
           ],
@@ -1237,8 +1298,8 @@ class _DashboardPageState extends State<DashboardPage> {
                                   ?.toString() ??
                               '目前無法讀取進階溫度感測器')
                           : 'CPU、GPU、DDR 等詳細感測器需要 Shizuku 授權。電池溫度仍可獨立讀取。',
-                      style: const TextStyle(
-                        color: Colors.white70,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                         fontSize: 12,
                       ),
                     ),
@@ -1386,27 +1447,7 @@ class _DashboardPageState extends State<DashboardPage> {
   // Device information
   // --------------------------------------------------
 
-  Widget _buildDeviceInfoCard() {
-    final brand = hardwareDevice['brand'] ??
-        _deviceInfo['brand'] ??
-        _deviceInfo['manufacturer'] ??
-        '未知';
-
-    final model = hardwareDevice['model'] ??
-        _deviceInfo['model'] ??
-        '未知';
-
-    final deviceName = hardwareDevice['deviceName'];
-
-    final androidVersion =
-        hardwareDevice['androidVersion'] ??
-            _deviceInfo['androidVersion'] ??
-            _deviceInfo['version'] ??
-            '未知';
-
-    final oneUiVersion =
-        hardwareDevice['oneUiVersion'] ?? '無法讀取';
-
+  Widget _systemCard(String title, Map<String, Object?> fields) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1414,43 +1455,70 @@ class _DashboardPageState extends State<DashboardPage> {
           crossAxisAlignment:
               CrossAxisAlignment.start,
           children: [
-            const Text(
-              '裝置資訊',
-              style: TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
-            _infoRow('品牌', brand.toString()),
-            _infoRow('型號', model.toString()),
-            if (deviceName != null &&
-                deviceName.toString().isNotEmpty)
-              _infoRow(
-                '裝置名稱',
-                deviceName.toString(),
-              ),
-            _infoRow(
-              'Android 版本',
-              androidVersion.toString(),
-            ),
-            _infoRow(
-              'One UI 版本',
-              oneUiVersion.toString(),
-            ),
-            _infoRow(
-              'CPU 核心數',
-              hardwareCpu['cores']?.toString() ?? '--',
-            ),
-            _infoRow('GPU', gpuDisplay),
-            _infoRow(
-              'RAM 總容量',
-              hardwareRam['totalMB'] is num
-                  ? '${((hardwareRam['totalMB'] as num) / 1024).toStringAsFixed(1)} GB'
-                  : '--',
-            ),
+            for (final entry in fields.entries)
+              _infoRow(entry.key, entry.value?.toString().trim() ?? ''),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildSystemPage() {
+    final device = hardwareDevice;
+    final gpu = hardwareGpu;
+    final display = View.of(context).display;
+    final ramMb = hardwareRam['totalMB'];
+    return RefreshIndicator(
+      onRefresh: _refreshAll,
+      child: ListView(
+        key: const PageStorageKey('system'),
+        physics: const AlwaysScrollableScrollPhysics(),
+        dragStartBehavior: DragStartBehavior.down,
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
+        children: [
+          _systemCard('裝置資訊', {
+            '裝置名稱': device['deviceName'] ?? _deviceInfo['deviceName'],
+            '品牌': _deviceInfo['brand'] ?? device['brand'],
+            '製造商': _deviceInfo['manufacturer'] ?? device['brand'],
+            '型號': device['model'] ?? _deviceInfo['model'],
+            '裝置代號': _deviceInfo['device'],
+            '產品代號': _deviceInfo['product'],
+          }),
+          _systemCard('作業系統', {
+            '系統版本': device['androidVersion'] ?? _deviceInfo['osVersion'],
+            if (device['androidSdk'] != null) 'Android SDK': device['androidSdk'],
+            if (device['brand']?.toString().toLowerCase() == 'samsung')
+              'One UI 版本': device['oneUiVersion'],
+            '安全性修補日期': _deviceInfo['securityPatch'],
+            '版本編號': _deviceInfo['buildDisplay'],
+            'Build ID': _deviceInfo['buildId'],
+            'Bootloader': _deviceInfo['bootloader'],
+          }),
+          ListenableBuilder(
+            listenable: _nativeCpu,
+            builder: (_, _) => _systemCard('硬體規格', {
+              'SoC 廠商': device['socManufacturer'],
+              'SoC 型號': device['socModel'],
+              'CPU 核心數': hardwareCpu['cores'],
+              '支援 ABI': _deviceInfo['abis'],
+              '硬體平台': _deviceInfo['hardware'],
+              '主機板': _deviceInfo['board'],
+              'GPU': gpu['renderer'],
+              'OpenGL ES': gpu['version'],
+              'RAM 總容量': ramMb is num
+                  ? '${(ramMb / 1024).toStringAsFixed(1)} GB'
+                  : null,
+              '儲存空間總量': _storageSize('totalBytes'),
+            }),
+          ),
+          _systemCard('顯示器', {
+            '解析度': '${display.size.width.round()} × ${display.size.height.round()}',
+            '目前更新率': '${display.refreshRate.toStringAsFixed(1)} Hz',
+            '像素倍率': '${display.devicePixelRatio.toStringAsFixed(2)}×',
+          }),
+        ],
       ),
     );
   }
@@ -1460,25 +1528,20 @@ class _DashboardPageState extends State<DashboardPage> {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
-          SizedBox(
-            width: 115,
+          Expanded(
+            flex: 2,
             child: Text(
               label,
-              maxLines: 1,
-              softWrap: false,
-              overflow: TextOverflow.visible,
-              style: const TextStyle(
-                color: Colors.white54,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
           ),
           const SizedBox(width: 8),
           Expanded(
+            flex: 3,
             child: Text(
-              value,
-              maxLines: 1,
-              softWrap: false,
-              overflow: TextOverflow.ellipsis,
+              value.isEmpty ? '—' : value,
               textAlign: TextAlign.end,
             ),
           ),
@@ -1505,12 +1568,9 @@ class _DashboardPageState extends State<DashboardPage> {
     final dashboard = RefreshIndicator(
       onRefresh: _refreshAll,
       child: ListView(
+        key: const PageStorageKey('monitor'),
         padding: const EdgeInsets.all(12),
         children: [
-          _buildDeviceInfoCard(),
-
-          const SizedBox(height: 10),
-
           _buildModeCard(),
 
           const SizedBox(height: 10),
@@ -1583,7 +1643,7 @@ class _DashboardPageState extends State<DashboardPage> {
             ],
           ),
           SizedBox(
-            height: 108,
+            height: 86 + MediaQuery.textScalerOf(context).scale(54),
             child: _buildMetricCard(
               title: '儲存空間已用',
               value: _storageSize('usedBytes') ?? '無法取得',
@@ -1613,7 +1673,17 @@ class _DashboardPageState extends State<DashboardPage> {
         onPressed: _openSettings,
         child: const Icon(Icons.settings),
       ),
-      body: SafeArea(child: dashboard),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedTab,
+        onDestinationSelected: (index) => setState(() => _selectedTab = index),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.phone_android), label: '系統'),
+          NavigationDestination(icon: Icon(Icons.monitor_heart_outlined), label: '監控'),
+        ],
+      ),
+      body: SafeArea(
+        child: _selectedTab == 0 ? _buildSystemPage() : dashboard,
+      ),
     );
   }
 }
