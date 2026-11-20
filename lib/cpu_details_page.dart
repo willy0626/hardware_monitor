@@ -2,21 +2,26 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'l10n/app_localizations.dart';
+
 class CpuDetailsPage extends StatefulWidget {
   const CpuDetailsPage({
     super.key,
     required this.samples,
     required this.nativeCpu,
+    this.embedded = false,
   });
 
   final ValueListenable<Map<String, dynamic>> samples;
   final ValueListenable<Map<String, dynamic>> nativeCpu;
+  final bool embedded;
 
   @override
   State<CpuDetailsPage> createState() => _CpuDetailsPageState();
 }
 
 class _CpuDetailsPageState extends State<CpuDetailsPage> {
+  AppLocalizations get l10n => AppLocalizations.of(context)!;
   static const _historyLimit = 30;
   final _history = <double>[];
   final _knownCores = <int>{};
@@ -89,113 +94,115 @@ class _CpuDetailsPageState extends State<CpuDetailsPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final accent = theme.colorScheme.primary;
-    return Scaffold(
-      appBar: AppBar(title: const Text('CPU 使用率')),
-      body: ListView(
-        padding: const EdgeInsets.all(12),
+    final size = MediaQuery.sizeOf(context);
+    final compact = widget.embedded && size.width >= 600 &&
+        size.width > size.height && size.height < 600;
+    final card = Card(
+      clipBehavior: Clip.antiAlias,
+      child: Stack(
         children: [
-          Card(
-            clipBehavior: Clip.antiAlias,
-            child: Stack(
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: compact ? 90 : 150,
+            child: RepaintBoundary(
+              child: ListenableBuilder(
+                listenable: _loadChanges,
+                builder: (_, _) => _history.length < 2
+                    ? const SizedBox.shrink()
+                    : ExcludeSemantics(child: _buildChart(accent)),
+              ),
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.all(compact ? 10 : 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  height: 150,
-                  child: RepaintBoundary(
-                    child: ListenableBuilder(
-                      listenable: _loadChanges,
-                      builder: (_, _) => _history.length < 2
-                          ? const SizedBox.shrink()
-                          : ExcludeSemantics(child: _buildChart(accent)),
-                    ),
-                  ),
+                ListenableBuilder(
+                  listenable: _loadChanges,
+                  builder: (_, _) {
+                    final load = _load;
+                    return Wrap(
+                      spacing: 12,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          l10n.cpuLoad(
+                            load == null ? '—' : '${load.toStringAsFixed(1)}%',
+                          ),
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            color: accent,
+                          ),
+                        ),
+                        if (load != null)
+                          Text(_wholeDevice ? l10n.wholeDevice : l10n.appOnly),
+                      ],
+                    );
+                  },
                 ),
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      ListenableBuilder(
-                        listenable: _loadChanges,
-                        builder: (_, _) {
-                          final load = _load;
-                          return Wrap(
-                            spacing: 12,
-                            crossAxisAlignment: WrapCrossAlignment.center,
+                SizedBox(height: compact ? 6 : 12),
+                ListenableBuilder(
+                  listenable: _coreChanges,
+                  builder: (_, _) {
+                    final cores = {
+                      for (var core = 0; core < _coreCount; core++) core,
+                      ..._knownCores,
+                      ..._frequencies.keys.whereType<int>(),
+                    }.toList()..sort();
+                    if (cores.isEmpty) {
+                      return Text(l10n.clocksUnavailable);
+                    }
+                    return GridView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      gridDelegate:
+                            SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            crossAxisSpacing: 8,
+                              mainAxisSpacing: compact ? 4 : 8,
+                              mainAxisExtent: compact ? 44 : 64,
+                          ),
+                      itemCount: cores.length,
+                      itemBuilder: (context, index) {
+                        final core = cores[index];
+                        final mhz = _frequencies[core];
+                        return DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surface.withValues(
+                              alpha: 0.75,
+                            ),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Text(
-                                'CPU 負載 ${load == null ? '—' : '${load.toStringAsFixed(1)}%'}',
-                                style: theme.textTheme.titleLarge?.copyWith(
-                                  color: accent,
-                                ),
+                                'CPU $core',
+                                style: theme.textTheme.labelMedium,
                               ),
-                              if (load != null)
-                                Text(_wholeDevice ? '全機' : 'App 本身'),
+                              Text(
+                                mhz is num ? '$mhz MHz' : '—',
+                                style: theme.textTheme.titleMedium,
+                              ),
                             ],
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      ListenableBuilder(
-                        listenable: _coreChanges,
-                        builder: (_, _) {
-                          final cores = {
-                            for (var core = 0; core < _coreCount; core++) core,
-                            ..._knownCores,
-                            ..._frequencies.keys.whereType<int>(),
-                          }.toList()..sort();
-                          if (cores.isEmpty) {
-                            return const Text('核心時脈暫時無法取得');
-                          }
-                          return GridView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 2,
-                                  crossAxisSpacing: 8,
-                                  mainAxisSpacing: 8,
-                                  mainAxisExtent: 64,
-                                ),
-                            itemCount: cores.length,
-                            itemBuilder: (context, index) {
-                              final core = cores[index];
-                              final mhz = _frequencies[core];
-                              return DecoratedBox(
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.surface.withValues(
-                                    alpha: 0.75,
-                                  ),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Text(
-                                      'CPU $core',
-                                      style: theme.textTheme.labelMedium,
-                                    ),
-                                    Text(
-                                      mhz is num ? '$mhz MHz' : '—',
-                                      style: theme.textTheme.titleMedium,
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    ],
-                  ),
+                          ),
+                        );
+                      },
+                    );
+                  },
                 ),
               ],
             ),
           ),
         ],
       ),
+    );
+    if (widget.embedded) return card;
+    return Scaffold(
+      appBar: AppBar(title: Text(l10n.cpuUsage)),
+      body: ListView(padding: const EdgeInsets.all(12), children: [card]),
     );
   }
 

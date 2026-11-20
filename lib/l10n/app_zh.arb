@@ -1,0 +1,182 @@
+{
+  "@@locale": "zh",
+  "performanceTab": "效能",
+  "batteryTab": "電池",
+  "appTitle": "手機硬體監控",
+  "newestVersion": "目前已經是最新版！",
+  "updateAvailable": "發現新版本",
+  "currentVersion": "目前版本：{version}",
+  "@currentVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "latestVersion": "最新版本：{version}",
+  "@latestVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "releaseNotes": "更新內容",
+  "noReleaseNotes": "沒有更新說明",
+  "noApk": "此版本尚未附上 APK，請前往 GitHub Release 頁面。",
+  "later": "稍後",
+  "downloadUpdate": "下載更新",
+  "viewRelease": "查看 Release",
+  "updateError": "檢查更新失敗，請確認網路連線",
+  "settings": "設定",
+  "general": "一般",
+  "appearance": "外觀",
+  "lightMode": "白色",
+  "darkMode": "深色",
+  "followSystem": "隨系統",
+  "language": "語言",
+  "checkUpdates": "檢查更新",
+  "checkGithub": "檢查 GitHub 是否有新版本",
+  "cpuError": "CPU 讀取失敗",
+  "thermalError": "溫度讀取失敗",
+  "advancedMode": "進階監控模式",
+  "basicMode": "一般監控模式",
+  "systemCpu": "全機 CPU 使用率",
+  "appCpu": "App 本身 CPU 使用率",
+  "cpuUnavailable": "CPU 資料暫時無法取得",
+  "unknown": "未知",
+  "fullyCharged": "已充滿",
+  "charging": "充電中",
+  "discharging": "放電中",
+  "notCharging": "未充電",
+  "monitoringMode": "目前監控模式",
+  "advancedEnabled": "已啟用進階系統資料讀取",
+  "basicDescription": "基本硬體監控不需要 Shizuku",
+  "shizukuStopped": "Shizuku 未啟動",
+  "waitingPermission": "等待授權",
+  "shizukuConnected": "已連線並取得授權",
+  "shizukuPermission": "Shizuku 系統權限",
+  "working": "處理中…",
+  "requestPermission": "檢查 / 請求 Shizuku 授權",
+  "shizukuOptional": "Shizuku 是選用的進階功能。沒有啟動時，基本監控仍然可以使用。",
+  "sensorCount": "{count} 個感測器",
+  "@sensorCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "temperatures": "溫度監控",
+  "cpuTemp": "CPU 溫度",
+  "gpuTemp": "GPU 溫度",
+  "ddrTemp": "DDR 溫度",
+  "batteryTemp": "電池溫度",
+  "requiresSensorAccess": "需要進階感測器權限",
+  "memorySensors": "記憶體感測器",
+  "unavailable": "無法取得",
+  "cpuSensors": "CPU 感測器",
+  "gpuSensors": "GPU 感測器",
+  "ddrSensors": "DDR 感測器",
+  "otherSensors": "其他感測器",
+  "sensorsUnavailable": "目前無法讀取進階溫度感測器",
+  "sensorsPermission": "CPU、GPU、DDR 等詳細感測器需要 Shizuku 授權。電池溫度仍可獨立讀取。",
+  "androidThermal": "Android 系統溫控狀態",
+  "thermalDescription": "這是系統熱狀態等級，不是實際溫度。",
+  "batteryInfo": "電池資訊",
+  "batteryLevel": "電量",
+  "batteryStatus": "電池狀態",
+  "deviceInfo": "裝置資訊",
+  "deviceName": "裝置名稱",
+  "brand": "品牌",
+  "manufacturer": "製造商",
+  "model": "型號",
+  "deviceCodename": "裝置代號",
+  "productCodename": "產品代號",
+  "operatingSystem": "作業系統",
+  "osVersion": "系統版本",
+  "oneUiVersion": "One UI 版本",
+  "securityPatch": "安全性修補日期",
+  "buildNumber": "版本編號",
+  "hardwareSpecs": "硬體規格",
+  "socVendor": "SoC 廠商",
+  "socModel": "SoC 型號",
+  "cpuCores": "CPU 核心數",
+  "supportedAbi": "支援 ABI",
+  "hardwarePlatform": "硬體平台",
+  "motherboard": "主機板",
+  "totalRam": "RAM 總容量",
+  "totalStorage": "儲存空間總量",
+  "display": "顯示器",
+  "resolution": "解析度",
+  "refreshRate": "目前更新率",
+  "pixelRatio": "像素倍率",
+  "liveMonitor": "硬體即時監控",
+  "cpuUsage": "CPU 使用率",
+  "ramUsed": "RAM 已使用",
+  "totalValue": "總共 {value}",
+  "@totalValue": {
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+  "memory": "記憶體",
+  "gpuUsage": "GPU 使用率",
+  "systemGpu": "全機GPU使用率",
+  "appGpu": "App 本身 GPU 使用率",
+  "thermalStatus": "系統溫控",
+  "storageUsed": "儲存空間已用",
+  "internalStorage": "內部儲存",
+  "systemTab": "系統",
+  "monitorTab": "監控",
+  "cpuLoad": "CPU 負載 {value}",
+  "@cpuLoad": {
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+  "wholeDevice": "全機",
+  "appOnly": "App 本身",
+  "clocksUnavailable": "核心時脈暫時無法取得",
+  "batteryDetails": "電池詳細資訊",
+  "loadingBattery": "讀取電池詳細資訊",
+  "information": "資訊",
+  "capacityHealth": "容量與健康",
+  "batteryPartial": "部分資料無法讀取。啟動並授權 Shizuku 後，可下拉重新讀取。",
+  "batteryTechnology": "電池技術",
+  "voltage": "電壓",
+  "manufactureDate": "製造日期",
+  "firstUse": "初次使用",
+  "typicalCapacity": "典型容量",
+  "ratedCapacity": "額定容量",
+  "batteryHealth": "電池健康度",
+  "chargeCycles": "充電循環",
+  "cycleValue": "{count} 次",
+  "@cycleValue": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "estimatedCycleValue": "約 {count} 次",
+  "@estimatedCycleValue": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "thermalNone": "正常",
+  "thermalLight": "輕度",
+  "thermalModerate": "中度",
+  "thermalSevere": "嚴重",
+  "thermalCritical": "危急",
+  "thermalEmergency": "緊急",
+  "thermalShutdown": "即將關機",
+  "unsupported": "不支援"
+}

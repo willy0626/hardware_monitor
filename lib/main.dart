@@ -3,6 +3,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import 'l10n/app_localizations.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -20,27 +22,51 @@ import 'services/shizuku_service.dart';
 import 'core/platform/hardware_channel.dart';
 
 const _themePreference = 'themeMode';
+const _languagePreference = 'language';
+const _languageNames = {
+  'zh': '繁體中文',
+  'zh_Hans': '简体中文',
+  'en': 'English',
+  'ja': '日本語',
+  'ko': '한국어',
+};
+
+const _traditionalChinese = Locale.fromSubtags(languageCode: 'zh', scriptCode: 'Hant');
+
+Locale? _appLocale(String? language) => switch (language) {
+  'zh' => _traditionalChinese,
+  'zh_Hans' => const Locale.fromSubtags(languageCode: 'zh', scriptCode: 'Hans'),
+  'en' || 'ja' || 'ko' => Locale(language!),
+  _ => null,
+};
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final preferences = SharedPreferencesAsync();
   var mode = ThemeMode.system;
+  String? language;
   try {
     final saved = await preferences.getString(_themePreference);
     mode = ThemeMode.values.firstWhere(
       (mode) => mode.name == saved,
       orElse: () => ThemeMode.system,
     );
+    language = await preferences.getString(_languagePreference);
   } catch (error) {
     debugPrint('Appearance preference: $error');
   }
-  runApp(HardwareMonitorApp(initialThemeMode: mode));
+  runApp(HardwareMonitorApp(initialThemeMode: mode, initialLanguage: language));
 }
 
 class HardwareMonitorApp extends StatefulWidget {
-  const HardwareMonitorApp({super.key, this.initialThemeMode = ThemeMode.system});
+  const HardwareMonitorApp({
+    super.key,
+    this.initialThemeMode = ThemeMode.system,
+    this.initialLanguage,
+  });
 
   final ThemeMode initialThemeMode;
+  final String? initialLanguage;
 
   @override
   State<HardwareMonitorApp> createState() => _HardwareMonitorAppState();
@@ -48,39 +74,69 @@ class HardwareMonitorApp extends StatefulWidget {
 
 class _HardwareMonitorAppState extends State<HardwareMonitorApp> {
   late final _themeMode = ValueNotifier(widget.initialThemeMode);
+  late final _language = ValueNotifier<String?>(
+    _appLocale(widget.initialLanguage) == null ? null : widget.initialLanguage,
+  );
 
   void _selectTheme(ThemeMode mode) {
     _themeMode.value = mode;
-    unawaited(_saveTheme(mode));
+    unawaited(_savePreference(_themePreference, mode.name));
   }
 
-  Future<void> _saveTheme(ThemeMode mode) async {
+  void _selectLanguage(String? language) {
+    _language.value = language;
+    unawaited(_savePreference(_languagePreference, language ?? ''));
+  }
+
+  Future<void> _savePreference(String key, String value) async {
     try {
-      await SharedPreferencesAsync().setString(_themePreference, mode.name);
+      await SharedPreferencesAsync().setString(key, value);
     } catch (error) {
-      debugPrint('Saving appearance preference: $error');
+      debugPrint('Saving preference $key: $error');
     }
   }
 
   @override
   void dispose() {
     _themeMode.dispose();
+    _language.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<ThemeMode>(
-      valueListenable: _themeMode,
-      builder: (_, mode, home) => MaterialApp(
-        title: '手機硬體監控',
+    return ListenableBuilder(
+      listenable: Listenable.merge([_themeMode, _language]),
+      builder: (_, home) => MaterialApp(
+        onGenerateTitle: (context) => AppLocalizations.of(context)!.appTitle,
         debugShowCheckedModeBanner: false,
-        themeMode: mode,
+        themeMode: _themeMode.value,
+        locale: _appLocale(_language.value),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: const [
+          _traditionalChinese,
+          ...AppLocalizations.supportedLocales,
+        ],
+        localeListResolutionCallback: (preferred, supported) {
+          final locales = preferred?.map((locale) {
+            if (locale.languageCode != 'zh') return locale;
+            final simplified = locale.scriptCode == 'Hans' ||
+                (locale.scriptCode == null &&
+                    const {'CN', 'SG', 'MY'}.contains(locale.countryCode));
+            return _appLocale(simplified ? 'zh_Hans' : 'zh')!;
+          }).toList();
+          return basicLocaleListResolution(locales, supported);
+        },
         theme: _theme(Brightness.light),
         darkTheme: _theme(Brightness.dark),
         home: home,
       ),
-      child: DashboardPage(themeMode: _themeMode, onThemeChanged: _selectTheme),
+      child: DashboardPage(
+        themeMode: _themeMode,
+        onThemeChanged: _selectTheme,
+        language: _language,
+        onLanguageChanged: _selectLanguage,
+      ),
     );
   }
 
@@ -88,10 +144,13 @@ class _HardwareMonitorAppState extends State<HardwareMonitorApp> {
     final dark = brightness == Brightness.dark;
     return ThemeData(
       useMaterial3: true,
-      scaffoldBackgroundColor: dark ? const Color(0xFF10131A) : const Color(0xFFF3F5F9),
-      colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue, brightness: brightness),
+      scaffoldBackgroundColor: dark ? const Color(0xFF101616) : const Color(0xFFF3F5F4),
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: const Color(0xFF08734E),
+        brightness: brightness,
+      ),
       cardTheme: CardThemeData(
-        color: dark ? const Color(0xFF1B202B) : Colors.white,
+        color: dark ? const Color(0xFF192221) : Colors.white,
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       ),
@@ -100,19 +159,32 @@ class _HardwareMonitorAppState extends State<HardwareMonitorApp> {
 }
 
 class DashboardPage extends StatefulWidget {
-  const DashboardPage({super.key, required this.themeMode, required this.onThemeChanged});
+  const DashboardPage({
+    super.key,
+    required this.themeMode,
+    required this.onThemeChanged,
+    required this.language,
+    required this.onLanguageChanged,
+  });
 
   final ValueListenable<ThemeMode> themeMode;
   final ValueChanged<ThemeMode> onThemeChanged;
+  final ValueListenable<String?> language;
+  final ValueChanged<String?> onLanguageChanged;
 
   @override
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
 class _DashboardPageState extends State<DashboardPage> {
+  AppLocalizations get l10n => AppLocalizations.of(context)!;
   final HardwareService _hardwareService = HardwareService();
   final HardwareChannel _nativeHardware = HardwareChannel();
   final ShizukuService _shizukuService = ShizukuService();
+  late final _batteryDetailsService = BatteryDetailsService(
+    _nativeHardware,
+    _shizukuService,
+  );
   late final GpuUsageService _gpuUsageService = GpuUsageService(_shizukuService);
   double? _gpuUsage;
   bool _samplingGpu = false;
@@ -133,7 +205,6 @@ class _DashboardPageState extends State<DashboardPage> {
   Map<String, dynamic> _shizukuStatus = {};
   final _cpuSamples = ValueNotifier<Map<String, dynamic>>({});
   final _nativeCpu = ValueNotifier<Map<String, dynamic>>({});
-  Map<String, dynamic> get _shizukuCpu => _cpuSamples.value;
   bool _samplingCpu = false;
   Map<String, dynamic> _temperatureInfo = {};
 
@@ -218,7 +289,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
       if (_compareVersions(currentVersion, latestVersion) >= 0) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('目前已經是最新版！')),
+          SnackBar(content: Text(l10n.newestVersion)),
         );
         return;
       }
@@ -226,11 +297,11 @@ class _DashboardPageState extends State<DashboardPage> {
       showDialog(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: const Row(
+          title: Row(
             children: [
               Icon(Icons.system_update, color: Colors.blueAccent),
               SizedBox(width: 8),
-              Text('發現新版本'),
+              Flexible(child: Text(l10n.updateAvailable)),
             ],
           ),
           content: SingleChildScrollView(
@@ -238,31 +309,31 @@ class _DashboardPageState extends State<DashboardPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('目前版本：$currentVersion'),
+                Text(l10n.currentVersion(currentVersion)),
                 const SizedBox(height: 6),
                 Text(
-                  '最新版本：$latestVersion',
+                  l10n.latestVersion(latestVersion),
                   style: const TextStyle(
                     color: Colors.greenAccent,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
                 const SizedBox(height: 16),
-                const Text(
-                  '更新內容',
+                Text(
+                  l10n.releaseNotes,
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  notes.isEmpty ? '沒有更新說明' : notes,
+                  notes.isEmpty ? l10n.noReleaseNotes : notes,
                   maxLines: 12,
                   overflow: TextOverflow.ellipsis,
                 ),
                 if (apkUrl == null)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 12),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
                     child: Text(
-                      '此版本尚未附上 APK，請前往 GitHub Release 頁面。',
+                      l10n.noApk,
                       style: TextStyle(color: Colors.orangeAccent),
                     ),
                   ),
@@ -272,7 +343,7 @@ class _DashboardPageState extends State<DashboardPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('稍後'),
+              child: Text(l10n.later),
             ),
             FilledButton(
               onPressed: () async {
@@ -288,7 +359,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   mode: LaunchMode.externalApplication,
                 );
               },
-              child: Text(apkUrl != null ? '下載更新' : '查看 Release'),
+              child: Text(apkUrl != null ? l10n.downloadUpdate : l10n.viewRelease),
             ),
           ],
         ),
@@ -298,8 +369,8 @@ class _DashboardPageState extends State<DashboardPage> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('檢查更新失敗，請確認網路連線'),
+          SnackBar(
+            content: Text(l10n.updateError),
           ),
         );
       }
@@ -314,16 +385,18 @@ class _DashboardPageState extends State<DashboardPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (settingsContext) => Scaffold(
+        builder: (settingsContext) {
+          final l10n = AppLocalizations.of(settingsContext)!;
+          return Scaffold(
           appBar: AppBar(
-            title: const Text('設定'),
+            title: Text(l10n.settings),
           ),
           body: ListView(
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
                 child: Text(
-                  '一般',
+                  l10n.general,
                   style: TextStyle(
                     color: Theme.of(settingsContext).colorScheme.onSurfaceVariant,
                     fontWeight: FontWeight.bold,
@@ -334,14 +407,14 @@ class _DashboardPageState extends State<DashboardPage> {
                 valueListenable: widget.themeMode,
                 builder: (_, mode, _) => ListTile(
                   leading: const Icon(Icons.palette_outlined),
-                  title: const Text('外觀'),
+                  title: Text(l10n.appearance),
                   trailing: DropdownButtonHideUnderline(
                     child: DropdownButton<ThemeMode>(
                       value: mode,
-                      items: const [
-                        DropdownMenuItem(value: ThemeMode.light, child: Text('白色')),
-                        DropdownMenuItem(value: ThemeMode.dark, child: Text('深色')),
-                        DropdownMenuItem(value: ThemeMode.system, child: Text('隨系統')),
+                      items: [
+                        DropdownMenuItem(value: ThemeMode.light, child: Text(l10n.lightMode)),
+                        DropdownMenuItem(value: ThemeMode.dark, child: Text(l10n.darkMode)),
+                        DropdownMenuItem(value: ThemeMode.system, child: Text(l10n.followSystem)),
                       ],
                       onChanged: (mode) {
                         if (mode != null) widget.onThemeChanged(mode);
@@ -350,13 +423,44 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ),
               ),
+              ValueListenableBuilder<String?>(
+                valueListenable: widget.language,
+                builder: (context, language, _) => ListTile(
+                  leading: const Icon(Icons.language),
+                  title: Text(l10n.language),
+                  subtitle: Text(_languageNames[language] ?? l10n.followSystem),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    final selected = await showDialog<String>(
+                      context: context,
+                      builder: (dialogContext) => SimpleDialog(
+                        title: Text(l10n.language),
+                        children: [
+                          SimpleDialogOption(
+                            onPressed: () => Navigator.pop(dialogContext, ''),
+                            child: Text(l10n.followSystem),
+                          ),
+                          for (final entry in _languageNames.entries)
+                            SimpleDialogOption(
+                              onPressed: () => Navigator.pop(dialogContext, entry.key),
+                              child: Text(entry.value),
+                            ),
+                        ],
+                      ),
+                    );
+                    if (mounted && selected != null) {
+                      widget.onLanguageChanged(selected.isEmpty ? null : selected);
+                    }
+                  },
+                ),
+              ),
               ListTile(
                 leading: const Icon(
                   Icons.system_update_alt,
                   color: Colors.blueAccent,
                 ),
-                title: const Text('檢查更新'),
-                subtitle: const Text('檢查 GitHub 是否有新版本'),
+                title: Text(l10n.checkUpdates),
+                subtitle: Text(l10n.checkGithub),
                 trailing: _checkingUpdate
                     ? const SizedBox(
                         width: 20,
@@ -368,7 +472,8 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             ],
           ),
-        ),
+          );
+        },
       ),
     );
   }
@@ -578,7 +683,7 @@ class _DashboardPageState extends State<DashboardPage> {
       if (mounted) {
         _cpuSamples.value = {
           'available': false,
-          'reason': 'CPU 讀取失敗',
+          'reason': l10n.cpuError,
         };
       }
     } finally {
@@ -605,7 +710,7 @@ class _DashboardPageState extends State<DashboardPage> {
           _temperatureInfo = {
             'available': false,
             'sensors': [],
-            'reason': '溫度讀取失敗',
+            'reason': l10n.thermalError,
           };
         });
       }
@@ -686,12 +791,6 @@ class _DashboardPageState extends State<DashboardPage> {
         _shizukuStatus['permission'] == true;
   }
 
-  bool get systemCpuAvailable {
-    return shizukuAuthorized &&
-        _shizukuCpu['available'] == true &&
-        _shizukuCpu['usage'] is num;
-  }
-
   bool get thermalSensorsAvailable {
     return shizukuAuthorized &&
         _temperatureInfo['available'] == true &&
@@ -701,46 +800,12 @@ class _DashboardPageState extends State<DashboardPage> {
 
   String get monitorMode {
     return shizukuAuthorized
-        ? '進階監控模式'
-        : '一般監控模式';
+        ? l10n.advancedMode
+        : l10n.basicMode;
   }
 
   // --------------------------------------------------
   // CPU display with automatic fallback
-  // --------------------------------------------------
-
-  String get cpuDisplay {
-    // 優先使用 Shizuku 全機 CPU 使用率
-    if (systemCpuAvailable) {
-      final usage = _shizukuCpu['usage'] as num;
-
-      return '${usage.toStringAsFixed(1)}%';
-    }
-
-    // Shizuku 不可用時，使用 Android 原生 API
-    final appUsage = hardwareCpu['usage'];
-
-    if (appUsage is num) {
-      return '${appUsage.toStringAsFixed(1)}%';
-    }
-
-    return '--';
-  }
-
-  String get cpuSubtitle {
-    if (systemCpuAvailable) {
-      return '全機 CPU 使用率';
-    }
-
-    if (hardwareCpu['usage'] is num) {
-      return 'App 本身 CPU 使用率';
-    }
-
-    return 'CPU 資料暫時無法取得';
-  }
-
-  // --------------------------------------------------
-  // RAM / GPU / Thermal
   // --------------------------------------------------
 
   String get ramDisplay {
@@ -760,9 +825,17 @@ class _DashboardPageState extends State<DashboardPage> {
     return '${(bytes / 1000000000).toStringAsFixed(1)} GB';
   }
 
-  String get thermalDisplay {
-    return hardwareThermal['statusText']?.toString() ?? '未知';
-  }
+  String get thermalDisplay => switch (hardwareThermal['statusText']) {
+    'Normal' => l10n.thermalNone,
+    'Light' => l10n.thermalLight,
+    'Moderate' => l10n.thermalModerate,
+    'Severe' => l10n.thermalSevere,
+    'Critical' => l10n.thermalCritical,
+    'Emergency' => l10n.thermalEmergency,
+    'Shutdown' => l10n.thermalShutdown,
+    'Unsupported' => l10n.unsupported,
+    _ => l10n.unknown,
+  };
 
   // --------------------------------------------------
   // Battery status translation
@@ -774,29 +847,29 @@ class _DashboardPageState extends State<DashboardPage> {
     final state = raw?.toString().toLowerCase() ?? '';
 
     if (state == 'full' || state.endsWith('.full')) {
-      return '已充滿';
+      return l10n.fullyCharged;
     }
 
     if (state == 'charging' ||
         state.endsWith('.charging')) {
-      return '充電中';
+      return l10n.charging;
     }
 
     if (state == 'discharging' ||
         state.endsWith('.discharging')) {
-      return '放電中';
+      return l10n.discharging;
     }
 
     if (state == 'notcharging' ||
         state == 'not charging' ||
         state.endsWith('.notcharging')) {
-      return '未充電';
+      return l10n.notCharging;
     }
 
     if (state.isEmpty ||
         state == 'unknown' ||
         state == 'null') {
-      return '未知';
+      return l10n.unknown;
     }
 
     return raw.toString();
@@ -901,13 +974,15 @@ class _DashboardPageState extends State<DashboardPage> {
               Icon(icon, color: color, size: 21),
               const SizedBox(width: 7),
               Expanded(
-                child: Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: 13,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 13,
+                    ),
                   ),
                 ),
               ),
@@ -929,13 +1004,15 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             ),
           ),
-          Text(
-            subtitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 11,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              subtitle,
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
         ],
@@ -974,7 +1051,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '目前監控模式',
+                    l10n.monitoringMode,
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontSize: 12,
@@ -994,8 +1071,8 @@ class _DashboardPageState extends State<DashboardPage> {
                   const SizedBox(height: 4),
                   Text(
                     advanced
-                        ? '已啟用進階系統資料讀取'
-                        : '基本硬體監控不需要 Shizuku',
+                        ? l10n.advancedEnabled
+                        : l10n.basicDescription,
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontSize: 11,
@@ -1028,11 +1105,11 @@ class _DashboardPageState extends State<DashboardPage> {
     String statusText;
 
     if (!running) {
-      statusText = 'Shizuku 未啟動';
+      statusText = l10n.shizukuStopped;
     } else if (!shizukuAuthorized) {
-      statusText = '等待授權';
+      statusText = l10n.waitingPermission;
     } else {
-      statusText = '已連線並取得授權';
+      statusText = l10n.shizukuConnected;
     }
 
     return Card(
@@ -1048,9 +1125,9 @@ class _DashboardPageState extends State<DashboardPage> {
                   color: Colors.blueAccent,
                 ),
                 const SizedBox(width: 10),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    'Shizuku 系統權限',
+                    l10n.shizukuPermission,
                     style: TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.bold,
@@ -1092,14 +1169,14 @@ class _DashboardPageState extends State<DashboardPage> {
                     : const Icon(Icons.verified_user),
                 label: Text(
                   _requestingPermission
-                      ? '處理中...'
-                      : '檢查 / 請求 Shizuku 授權',
+                      ? l10n.working
+                      : l10n.requestPermission,
                 ),
               ),
             ),
             const SizedBox(height: 6),
             Text(
-              'Shizuku 是選用的進階功能。沒有啟動時，基本監控仍然可以使用。',
+              l10n.shizukuOptional,
               style: TextStyle(
                 fontSize: 11,
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -1132,7 +1209,7 @@ class _DashboardPageState extends State<DashboardPage> {
       child: ExpansionTile(
         leading: Icon(icon, color: color),
         title: Text(title),
-        subtitle: Text('${sensors.length} 個感測器'),
+        subtitle: Text(l10n.sensorCount(sensors.length)),
         trailing: Text(
           _temperatureText(maxTemp),
           style: TextStyle(
@@ -1195,10 +1272,10 @@ class _DashboardPageState extends State<DashboardPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(4, 12, 4, 8),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 12, 4, 8),
           child: Text(
-            '溫度監控',
+            l10n.temperatures,
             style: TextStyle(
               fontSize: 19,
               fontWeight: FontWeight.bold,
@@ -1214,38 +1291,38 @@ class _DashboardPageState extends State<DashboardPage> {
           childAspectRatio: 1.3,
           children: [
             _buildMetricCard(
-              title: 'CPU 溫度',
+              title: l10n.cpuTemp,
               value: _temperatureText(cpuTemp),
               subtitle: sensorsAvailable
                   ? 'CPU / CPU Cluster'
-                  : '需要進階感測器權限',
+                  : l10n.requiresSensorAccess,
               icon: Icons.memory,
               color: Colors.orange,
             ),
             _buildMetricCard(
-              title: 'GPU 溫度',
+              title: l10n.gpuTemp,
               value: _temperatureText(gpuTemp),
               subtitle: sensorsAvailable
                   ? 'GPU Sensor'
-                  : '需要進階感測器權限',
+                  : l10n.requiresSensorAccess,
               icon: Icons.developer_board,
               color: Colors.blue,
             ),
             _buildMetricCard(
-              title: 'DDR 溫度',
+              title: l10n.ddrTemp,
               value: _temperatureText(ddrTemp),
               subtitle: sensorsAvailable
-                  ? '記憶體感測器'
-                  : '需要進階感測器權限',
+                  ? l10n.memorySensors
+                  : l10n.requiresSensorAccess,
               icon: Icons.storage,
               color: Colors.purple,
             ),
             _buildMetricCard(
-              title: '電池溫度',
+              title: l10n.batteryTemp,
               value: _temperatureText(batteryTemp),
               subtitle: batteryTemp != null
                   ? 'Android BatteryManager'
-                  : '目前無法讀取',
+                  : l10n.unavailable,
               icon: Icons.battery_charging_full,
               color: Colors.green,
             ),
@@ -1257,25 +1334,25 @@ class _DashboardPageState extends State<DashboardPage> {
         // Shizuku 感測器明細
         if (sensorsAvailable) ...[
           _buildTemperatureGroup(
-            title: 'CPU 感測器',
+            title: l10n.cpuSensors,
             category: 'cpu',
             icon: Icons.memory,
             color: Colors.orange,
           ),
           _buildTemperatureGroup(
-            title: 'GPU 感測器',
+            title: l10n.gpuSensors,
             category: 'gpu',
             icon: Icons.developer_board,
             color: Colors.blue,
           ),
           _buildTemperatureGroup(
-            title: 'DDR 感測器',
+            title: l10n.ddrSensors,
             category: 'ddr',
             icon: Icons.storage,
             color: Colors.purple,
           ),
           _buildTemperatureGroup(
-            title: '其他感測器',
+            title: l10n.otherSensors,
             category: 'other',
             icon: Icons.thermostat,
             color: Colors.teal,
@@ -1294,10 +1371,8 @@ class _DashboardPageState extends State<DashboardPage> {
                   Expanded(
                     child: Text(
                       shizukuAuthorized
-                          ? (_temperatureInfo['reason']
-                                  ?.toString() ??
-                              '目前無法讀取進階溫度感測器')
-                          : 'CPU、GPU、DDR 等詳細感測器需要 Shizuku 授權。電池溫度仍可獨立讀取。',
+                          ? l10n.sensorsUnavailable
+                          : l10n.sensorsPermission,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                         fontSize: 12,
@@ -1318,9 +1393,9 @@ class _DashboardPageState extends State<DashboardPage> {
               Icons.thermostat_auto,
               color: Colors.cyan,
             ),
-            title: const Text('Android 系統溫控狀態'),
-            subtitle: const Text(
-              '這是系統熱狀態等級，不是實際溫度。',
+            title: Text(l10n.androidThermal),
+            subtitle: Text(
+              l10n.thermalDescription,
               style: TextStyle(fontSize: 11),
             ),
             trailing: Text(
@@ -1351,37 +1426,58 @@ class _DashboardPageState extends State<DashboardPage> {
         ? 0
         : (batteryPercent / 100).clamp(0.0, 1.0);
 
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () => Navigator.of(context).push<void>(
-          MaterialPageRoute(
-            builder: (_) => BatteryDetailsPage(
-              service: BatteryDetailsService(_nativeHardware, _shizukuService),
-            ),
+    if (_compactLandscape) {
+      return Card(
+        color: Theme.of(context).colorScheme.primaryContainer,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          child: Row(
+            children: [
+              Text(
+                batteryPercent == null ? '—' : '${batteryPercent.toStringAsFixed(0)}%',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(batteryStateText),
+                    const SizedBox(height: 6),
+                    LinearProgressIndicator(value: progress, minHeight: 6),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 14),
+              Text(_temperatureText(_readDouble(temperature))),
+            ],
           ),
         ),
+      );
+    }
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      color: Theme.of(context).colorScheme.primaryContainer,
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Row(
+              Row(
                 children: [
-                  Icon(
+                  const Icon(
                     Icons.battery_full,
                     color: Colors.green,
                   ),
                   SizedBox(width: 8),
                   Text(
-                    '電池資訊',
+                    l10n.batteryInfo,
                     style: TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  Spacer(),
-                  Icon(Icons.chevron_right),
                 ],
               ),
               const SizedBox(height: 16),
@@ -1389,13 +1485,13 @@ class _DashboardPageState extends State<DashboardPage> {
                 mainAxisAlignment:
                     MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('電量'),
+                  Text(l10n.batteryLevel),
                   Text(
                     batteryPercent != null
                         ? '${batteryPercent.toStringAsFixed(0)}%'
                         : '--',
                     style: const TextStyle(
-                      fontSize: 20,
+                fontSize: 32,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -1414,7 +1510,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 mainAxisAlignment:
                     MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('電池狀態'),
+                  Text(l10n.batteryStatus),
                   Text(
                     batteryStateText,
                     style: const TextStyle(
@@ -1428,7 +1524,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 mainAxisAlignment:
                     MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('電池溫度'),
+                  Text(l10n.batteryTemp),
                   Text(
                     temperature is num
                         ? '${temperature.toStringAsFixed(1)}°C'
@@ -1439,7 +1535,6 @@ class _DashboardPageState extends State<DashboardPage> {
             ],
           ),
         ),
-      ),
     );
   }
 
@@ -1476,48 +1571,73 @@ class _DashboardPageState extends State<DashboardPage> {
         key: const PageStorageKey('system'),
         physics: const AlwaysScrollableScrollPhysics(),
         dragStartBehavior: DragStartBehavior.down,
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
+        padding: const EdgeInsets.all(12),
         children: [
-          _systemCard('裝置資訊', {
-            '裝置名稱': device['deviceName'] ?? _deviceInfo['deviceName'],
-            '品牌': _deviceInfo['brand'] ?? device['brand'],
-            '製造商': _deviceInfo['manufacturer'] ?? device['brand'],
-            '型號': device['model'] ?? _deviceInfo['model'],
-            '裝置代號': _deviceInfo['device'],
-            '產品代號': _deviceInfo['product'],
+          if (!_compactLandscape) Card(
+            color: Theme.of(context).colorScheme.primaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (device['brand'] != null) Text(device['brand'].toString()),
+                  Text(
+                    (device['deviceName'] ?? _deviceInfo['deviceName'] ??
+                        device['model'] ?? l10n.deviceInfo).toString(),
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  if (device['androidVersion'] != null)
+                    Text(device['androidVersion'].toString()),
+                ],
+              ),
+            ),
+          ),
+          _adaptiveColumns(
+            [
+              _systemCard(l10n.deviceInfo, {
+            l10n.deviceName: device['deviceName'] ?? _deviceInfo['deviceName'],
+            l10n.brand: _deviceInfo['brand'] ?? device['brand'],
+            l10n.manufacturer: _deviceInfo['manufacturer'] ?? device['brand'],
+            l10n.model: device['model'] ?? _deviceInfo['model'],
+            l10n.deviceCodename: _deviceInfo['device'],
+            l10n.productCodename: _deviceInfo['product'],
           }),
-          _systemCard('作業系統', {
-            '系統版本': device['androidVersion'] ?? _deviceInfo['osVersion'],
+          _systemCard(l10n.operatingSystem, {
+            l10n.osVersion: device['androidVersion'] ?? _deviceInfo['osVersion'],
             if (device['androidSdk'] != null) 'Android SDK': device['androidSdk'],
             if (device['brand']?.toString().toLowerCase() == 'samsung')
-              'One UI 版本': device['oneUiVersion'],
-            '安全性修補日期': _deviceInfo['securityPatch'],
-            '版本編號': _deviceInfo['buildDisplay'],
+              l10n.oneUiVersion: device['oneUiVersion'],
+            l10n.securityPatch: _deviceInfo['securityPatch'],
+            l10n.buildNumber: _deviceInfo['buildDisplay'],
             'Build ID': _deviceInfo['buildId'],
             'Bootloader': _deviceInfo['bootloader'],
           }),
-          ListenableBuilder(
+            ],
+            [
+              ListenableBuilder(
             listenable: _nativeCpu,
-            builder: (_, _) => _systemCard('硬體規格', {
-              'SoC 廠商': device['socManufacturer'],
-              'SoC 型號': device['socModel'],
-              'CPU 核心數': hardwareCpu['cores'],
-              '支援 ABI': _deviceInfo['abis'],
-              '硬體平台': _deviceInfo['hardware'],
-              '主機板': _deviceInfo['board'],
+            builder: (_, _) => _systemCard(l10n.hardwareSpecs, {
+              l10n.socVendor: device['socManufacturer'],
+              l10n.socModel: device['socModel'],
+              l10n.cpuCores: hardwareCpu['cores'],
+              l10n.supportedAbi: _deviceInfo['abis'],
+              l10n.hardwarePlatform: _deviceInfo['hardware'],
+              l10n.motherboard: _deviceInfo['board'],
               'GPU': gpu['renderer'],
               'OpenGL ES': gpu['version'],
-              'RAM 總容量': ramMb is num
+              l10n.totalRam: ramMb is num
                   ? '${(ramMb / 1024).toStringAsFixed(1)} GB'
                   : null,
-              '儲存空間總量': _storageSize('totalBytes'),
+              l10n.totalStorage: _storageSize('totalBytes'),
             }),
           ),
-          _systemCard('顯示器', {
-            '解析度': '${display.size.width.round()} × ${display.size.height.round()}',
-            '目前更新率': '${display.refreshRate.toStringAsFixed(1)} Hz',
-            '像素倍率': '${display.devicePixelRatio.toStringAsFixed(2)}×',
+          _systemCard(l10n.display, {
+            l10n.resolution: '${display.size.width.round()} × ${display.size.height.round()}',
+            l10n.refreshRate: '${display.refreshRate.toStringAsFixed(1)} Hz',
+            l10n.pixelRatio: '${display.devicePixelRatio.toStringAsFixed(2)}×',
           }),
+            ],
+          ),
         ],
       ),
     );
@@ -1554,136 +1674,189 @@ class _DashboardPageState extends State<DashboardPage> {
   // Main dashboard
   // --------------------------------------------------
 
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
+  Widget _adaptiveColumns(List<Widget> left, List<Widget> right) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < (_compactLandscape ? 500 : 580)) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [...left, ...right],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: left,
+            )),
+            const SizedBox(width: 8),
+            Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: right,
+            )),
+          ],
+        );
+      },
+    );
+  }
 
+  Widget _buildPerformancePage() {
     final totalStorage = _storageSize('totalBytes');
-    final dashboard = RefreshIndicator(
+    final ramMb = hardwareRam['totalMB'];
+    final metricHeight = (_compactLandscape ? 62 : 86) +
+        MediaQuery.textScalerOf(context).scale(54);
+    return RefreshIndicator(
       onRefresh: _refreshAll,
       child: ListView(
-        key: const PageStorageKey('monitor'),
+        key: const PageStorageKey('performance'),
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(12),
         children: [
-          _buildModeCard(),
-
-          const SizedBox(height: 10),
-
-          _buildShizukuCard(),
-
-          const SizedBox(height: 10),
-
-          const Text(
-            '硬體即時監控',
-            style: TextStyle(
-              fontSize: 19,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics:
-                const NeverScrollableScrollPhysics(),
-            childAspectRatio: 1.3,
-            children: [
-              ListenableBuilder(
-                listenable: Listenable.merge([_cpuSamples, _nativeCpu]),
-                builder: (context, _) => _buildMetricCard(
-                  title: 'CPU 使用率',
-                  value: cpuDisplay,
-                  subtitle: cpuSubtitle,
-                  icon: Icons.memory,
-                  color: Colors.orange,
-                  onTap: () => Navigator.of(context).push<void>(
-                    MaterialPageRoute(
-                      builder: (_) => CpuDetailsPage(
-                        samples: _cpuSamples,
-                        nativeCpu: _nativeCpu,
+          _adaptiveColumns(
+            [
+              CpuDetailsPage(
+                samples: _cpuSamples,
+                nativeCpu: _nativeCpu,
+                embedded: true,
+              ),
+            ],
+            [
+              Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: metricHeight,
+                      child: _buildMetricCard(
+                        title: l10n.gpuUsage,
+                        value: !shizukuAuthorized || _gpuUsage == null
+                            ? l10n.unavailable
+                            : '${_gpuUsage!.toStringAsFixed(0)}%',
+                        subtitle: shizukuAuthorized ? l10n.systemGpu : l10n.appGpu,
+                        icon: Icons.developer_board,
+                        color: Colors.blue,
                       ),
                     ),
                   ),
+                  Expanded(
+                    child: SizedBox(
+                      height: metricHeight,
+                      child: _buildMetricCard(
+                        title: l10n.ramUsed,
+                        value: ramDisplay,
+                        subtitle: ramMb is num
+                            ? l10n.totalValue('${(ramMb / 1024).toStringAsFixed(1)} GB')
+                            : l10n.memory,
+                        icon: Icons.memory,
+                        color: Colors.purple,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(
+                height: metricHeight,
+                child: _buildMetricCard(
+                  title: l10n.storageUsed,
+                  value: _storageSize('usedBytes') ?? l10n.unavailable,
+                  subtitle: totalStorage == null
+                      ? l10n.internalStorage
+                      : l10n.totalValue(totalStorage),
+                  icon: Icons.folder_outlined,
+                  color: Colors.teal,
                 ),
-              ),
-              _buildMetricCard(
-                title: 'RAM 已使用',
-                value: ramDisplay,
-                subtitle:
-                    hardwareRam['totalMB'] is num
-                        ? '總共 ${((hardwareRam['totalMB'] as num) / 1024).toStringAsFixed(1)} GB'
-                        : '記憶體',
-                icon: Icons.storage,
-                color: Colors.purple,
-              ),
-              _buildMetricCard(
-                title: 'GPU 使用率',
-                value: !shizukuAuthorized || _gpuUsage == null
-                    ? '無法取得'
-                    : '${_gpuUsage!.toStringAsFixed(0)}%',
-                subtitle: shizukuAuthorized ? '全機GPU使用率' : 'app本身GPU使用率',
-                icon: Icons.developer_board,
-                color: Colors.blue,
-              ),
-              _buildMetricCard(
-                title: '系統溫控',
-                value: thermalDisplay,
-                subtitle: 'Android Thermal Status',
-                icon: Icons.thermostat,
-                color: Colors.cyan,
               ),
             ],
           ),
-          SizedBox(
-            height: 86 + MediaQuery.textScalerOf(context).scale(54),
-            child: _buildMetricCard(
-              title: '儲存空間已用',
-              value: _storageSize('usedBytes') ?? '無法取得',
-              subtitle: totalStorage == null
-                  ? '內部儲存'
-                  : '總共 $totalStorage',
-              icon: Icons.folder_outlined,
-              color: Colors.teal,
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          _buildBatteryCard(),
-
-          const SizedBox(height: 10),
-
           _buildTemperatureCard(),
-
-          const SizedBox(height: 80),
+          _buildModeCard(),
+          _buildShizukuCard(),
         ],
       ),
     );
+  }
+
+  bool get _compactLandscape {
+    final size = MediaQuery.sizeOf(context);
+    return size.width >= 600 && size.width > size.height && size.height < 600;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    final deviceName = hardwareDevice['deviceName'] ?? _deviceInfo['deviceName'];
+    final theme = Theme.of(context);
+    final page = switch (_selectedTab) {
+      0 => _buildSystemPage(),
+      1 => _buildPerformancePage(),
+      _ => BatteryDetailsPage(
+        service: _batteryDetailsService,
+        summary: _buildBatteryCard(),
+        compact: _compactLandscape,
+      ),
+    };
+    final destinations = [
+      (Icons.phone_android, l10n.systemTab),
+      (Icons.speed_outlined, l10n.performanceTab),
+      (Icons.battery_charging_full, l10n.batteryTab),
+    ];
+    final settings = IconButton(
+      tooltip: l10n.settings,
+      onPressed: _openSettings,
+      icon: const Icon(Icons.settings_outlined),
+    );
+    if (_compactLandscape) {
+      return Scaffold(
+        body: SafeArea(
+          child: Row(
+            children: [
+              NavigationRail(
+                minWidth: 64,
+                scrollable: true,
+                selectedIndex: _selectedTab,
+                onDestinationSelected: (index) =>
+                    setState(() => _selectedTab = index),
+                leading: settings,
+                destinations: [
+                  for (final (icon, label) in destinations)
+                    NavigationRailDestination(
+                      icon: Tooltip(message: label, child: Icon(icon)),
+                      label: Text(label),
+                    ),
+                ],
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(child: page),
+            ],
+          ),
+        ),
+      );
+    }
     return Scaffold(
-      floatingActionButton: FloatingActionButton(
-        tooltip: '設定',
-        onPressed: _openSettings,
-        child: const Icon(Icons.settings),
+      appBar: AppBar(
+        leading: Icon(Icons.monitor_heart_outlined, color: theme.colorScheme.primary),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(l10n.appTitle, style: theme.textTheme.titleMedium),
+            if (deviceName != null)
+              Text(deviceName.toString(), style: theme.textTheme.bodySmall),
+          ],
+        ),
+        actions: [settings],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedTab,
         onDestinationSelected: (index) => setState(() => _selectedTab = index),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.phone_android), label: '系統'),
-          NavigationDestination(icon: Icon(Icons.monitor_heart_outlined), label: '監控'),
+        destinations: [
+          for (final (icon, label) in destinations)
+            NavigationDestination(icon: Icon(icon), label: label),
         ],
       ),
-      body: SafeArea(
-        child: _selectedTab == 0 ? _buildSystemPage() : dashboard,
-      ),
+      body: SafeArea(bottom: false, child: page),
     );
   }
 }

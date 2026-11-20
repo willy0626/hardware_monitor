@@ -2,19 +2,30 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'l10n/app_localizations.dart';
+
 import 'services/battery_details_service.dart';
 
 class BatteryDetailsPage extends StatefulWidget {
-  const BatteryDetailsPage({super.key, required this.service});
+  const BatteryDetailsPage({
+    super.key,
+    required this.service,
+    this.summary,
+    this.compact = false,
+  });
 
   final BatteryDetailsService service;
+  final Widget? summary;
+  final bool compact;
 
   @override
   State<BatteryDetailsPage> createState() => _BatteryDetailsPageState();
 }
 
 class _BatteryDetailsPageState extends State<BatteryDetailsPage> {
+  AppLocalizations get l10n => AppLocalizations.of(context)!;
   late Future<Map<BatteryDetail, String>> _details;
+  String? _detailsLocale;
   late final AppLifecycleListener _lifecycle;
   Timer? _voltageTimer;
   bool _readingVoltage = false;
@@ -23,7 +34,6 @@ class _BatteryDetailsPageState extends State<BatteryDetailsPage> {
   @override
   void initState() {
     super.initState();
-    _details = widget.service.load();
     _lifecycle = AppLifecycleListener(
       onStateChange: (state) {
         if (state == AppLifecycleState.resumed) {
@@ -36,6 +46,24 @@ class _BatteryDetailsPageState extends State<BatteryDetailsPage> {
     if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
       _startVoltageUpdates();
     }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_detailsLocale != l10n.localeName) {
+      _detailsLocale = l10n.localeName;
+      _details = _loadDetails();
+    }
+  }
+
+  Future<Map<BatteryDetail, String>> _loadDetails() {
+    final strings = l10n;
+    return widget.service.load(
+      formatCycles: (count, estimated) => estimated
+          ? strings.estimatedCycleValue(count)
+          : strings.cycleValue(count),
+    );
   }
 
   void _startVoltageUpdates() {
@@ -75,50 +103,65 @@ class _BatteryDetailsPageState extends State<BatteryDetailsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final content = FutureBuilder<Map<BatteryDetail, String>>(
+      future: _details,
+      builder: (context, snapshot) {
+        final loading = snapshot.connectionState == ConnectionState.waiting;
+        final details = {...?snapshot.data, BatteryDetail.voltage: ?_voltage};
+        final information = _buildCard(
+          l10n.information,
+          BatteryDetail.values.take(4),
+          details,
+          loading,
+        );
+        final capacity = _buildCard(
+          l10n.capacityHealth,
+          BatteryDetail.values.skip(4),
+          details,
+          loading,
+        );
+        return RefreshIndicator(
+          onRefresh: () async {
+            setState(() => _details = _loadDetails());
+            await _details;
+          },
+          child: ListView(
+            key: const PageStorageKey('battery'),
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.all(widget.compact ? 8 : 12),
+            children: [
+              ?widget.summary,
+              if (loading)
+                LinearProgressIndicator(semanticsLabel: l10n.loadingBattery),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  if (constraints.maxWidth < (widget.compact ? 500 : 580)) {
+                    return Column(children: [information, capacity]);
+                  }
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: information),
+                      const SizedBox(width: 8),
+                      Expanded(child: capacity),
+                    ],
+                  );
+                },
+              ),
+              if (!loading && details.length < BatteryDetail.values.length)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                  child: Text(l10n.batteryPartial),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+    if (widget.summary != null) return content;
     return Scaffold(
-      appBar: AppBar(title: const Text('電池詳細資訊')),
-      body: FutureBuilder<Map<BatteryDetail, String>>(
-        future: _details,
-        builder: (context, snapshot) {
-          final loading = snapshot.connectionState == ConnectionState.waiting;
-          final details = {
-            ...?snapshot.data,
-            if (_voltage != null) BatteryDetail.voltage: _voltage!,
-          };
-          return RefreshIndicator(
-            onRefresh: () async {
-              setState(() => _details = widget.service.load());
-              await _details;
-            },
-            child: ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.all(12),
-              children: [
-                if (loading)
-                  const LinearProgressIndicator(semanticsLabel: '讀取電池詳細資訊'),
-                _buildCard(
-                  '資訊',
-                  BatteryDetail.values.take(4),
-                  details,
-                  loading,
-                ),
-                const SizedBox(height: 10),
-                _buildCard(
-                  '容量與健康',
-                  BatteryDetail.values.skip(4),
-                  details,
-                  loading,
-                ),
-                if (!loading && details.length < BatteryDetail.values.length)
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(12, 12, 12, 0),
-                    child: Text('部分資料無法讀取。啟動並授權 Shizuku 後，可下拉重新讀取。'),
-                  ),
-              ],
-            ),
-          );
-        },
-      ),
+      appBar: AppBar(title: Text(l10n.batteryDetails)),
+      body: content,
     );
   }
 
@@ -139,8 +182,19 @@ class _BatteryDetailsPageState extends State<BatteryDetailsPage> {
           for (final field in fields)
             ListTile(
               dense: true,
-              title: Text(field.label),
-              trailing: Text(details[field] ?? (loading ? '…' : '無法取得')),
+              title: Text(switch (field) {
+                BatteryDetail.technology => l10n.batteryTechnology,
+                BatteryDetail.voltage => l10n.voltage,
+                BatteryDetail.manufactureDate => l10n.manufactureDate,
+                BatteryDetail.firstUseDate => l10n.firstUse,
+                BatteryDetail.designCapacity => l10n.typicalCapacity,
+                BatteryDetail.ratedCapacity => l10n.ratedCapacity,
+                BatteryDetail.health => l10n.batteryHealth,
+                BatteryDetail.cycles => l10n.chargeCycles,
+              }),
+              trailing: Text(
+                details[field] ?? (loading ? '…' : l10n.unavailable),
+              ),
             ),
         ],
       ),

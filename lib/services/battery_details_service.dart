@@ -51,7 +51,9 @@ class BatteryDetailsService {
     'cycle_count': BatteryDetail.cycles,
   };
 
-  Future<Map<BatteryDetail, String>> load() async {
+  Future<Map<BatteryDetail, String>> load({
+    String Function(int count, bool estimated)? formatCycles,
+  }) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return {};
 
     var native = <String, dynamic>{};
@@ -67,7 +69,10 @@ class BatteryDetailsService {
     String? zeroCycles;
     void add(BatteryDetail field, Object? raw, {double divisor = 1}) {
       if (details.containsKey(field)) return;
-      final value = _format(field, raw, divisor);
+      var value = _format(field, raw, divisor);
+      if (value != null && field == BatteryDetail.cycles && formatCycles != null) {
+        value = formatCycles(_number(raw)!.round(), false);
+      }
       if (samsung && field == BatteryDetail.cycles && _number(raw) == 0) {
         // Some Samsung devices report zero through Android while retaining
         // the actual count in their vendor battery data.
@@ -196,7 +201,10 @@ class BatteryDetailsService {
             (usage >= 100 || zeroCycles == null)) {
           details.putIfAbsent(
             BatteryDetail.cycles,
-            () => '約 ${(usage / 100).floor()} 次',
+            () {
+              final cycles = (usage / 100).floor();
+              return formatCycles?.call(cycles, true) ?? '約 $cycles 次';
+            },
           );
         }
       }

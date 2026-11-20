@@ -2,6 +2,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hardware_monitor/cpu_details_page.dart';
+import 'package:hardware_monitor/l10n/app_localizations.dart';
 import 'package:hardware_monitor/services/shizuku_service.dart';
 import 'package:shizuku_api_plugin/shizuku_api_platform_interface.dart';
 
@@ -29,6 +30,9 @@ void main() {
     });
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('zh'),
         home: CpuDetailsPage(samples: samples, nativeCpu: native),
       ),
     );
