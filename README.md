@@ -1,18 +1,19 @@
-# hardware_monitor
+# 手機硬體監控
 
-這是個可以使用手機查看您的硬體的程式
-目前持續更新中
+一款持續更新的 Android 硬體資訊與即時監控工具。可以查看手機規格、觀察 CPU 與電池的即時狀態，也能測試螢幕、感應器和音訊等硬體功能。
 
-## Getting Started
+## 下載
 
-This project is a starting point for a Flutter application.
+前往 [GitHub Releases](https://github.com/willy0626/hardware_monitor/releases/latest) 下載最新版 APK。
 
-A few resources to get you started if this is your first Flutter project:
+## 主要功能
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+- **系統資訊**：查看裝置型號、Android 版本、系統組建與硬體平台。
+- **硬體規格**：查看 CPU 核心與時脈、GPU 型號與圖形 API，以及螢幕支援的解析度、更新率和 HDR。
+- **即時監控**：查看 CPU 使用率、各核心時脈、記憶體、儲存空間與溫度，並透過曲線圖觀察 CPU 負載變化。進階監控可搭配 Shizuku 讀取裝置支援的全機數據。
+- **電池資訊**：查看電量、充電狀態、溫度、電壓、典型與額定容量，以及裝置提供的製造日期、電池健康度和充電循環。
+- **硬體測試**：測試手電筒、震動、實體按鍵、多點觸控、螢幕、背光、感應器、充電、音訊與生物辨識。
+- **外觀與語言**：支援直向與橫向排版，可選淺色、深色或跟隨系統。提供繁體中文、簡體中文、英文、日文與韓文。
+- **OTA 更新**：有補丁時會先詢問是否下載，可設定僅 Wi-Fi，或允許使用行動數據。
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+部分數據會因手機型號、Android 版本和系統權限而異。
